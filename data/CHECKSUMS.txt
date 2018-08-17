@@ -1,0 +1,2 @@
+"file" "checksum" "algorithm"
+"studyArea.kml" "e84cdbaa4aec590d" "xxhash64"

@@ -1,0 +1,28 @@
+---
+title: "mpbRedTopSpread"
+author:
+  - "Alex M. Chubaty"
+  - "Barry J. Cooke"
+  - "Eliot J. B. McIntire"
+date: "February 5, 2018"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+bibliography:
+  - ../../bibliography.bib
+---
+
+### `mpbRedTopSpread`
+
+Spread is modeled as an asymmetric percolation process, based on the availability of pine and distance to beetle sources.
+Infested pixels disperse "propagules", which follow a dispersal kernel and settle in pixels based on the proportion pine in the receiving pixel, such that cells with more pine accept more propagules.
+Pattern Oriented Modeling (POM; e.g., @Grimm:2005sc, @Grimm:2012pom), a heuristic optimization approach, is used to select the dispersal kernel and its parameters, as well as the parameters associated with asymmetric spread, based on the MPB attack data.
+The POM-fit parameterization is then used for projecting MPB spread into the future.
+
+Currently, the module implements a negative exponential dispersal kernel (others will be implemented) and we use the `spread2` function from the `SpaDES.tools` package [@Chubaty:2018st] to disperse propagules.
+
+![](modules/mpbRedTopSpread/sample_spread.png)
+
+#### References
