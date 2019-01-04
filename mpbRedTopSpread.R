@@ -18,16 +18,16 @@ defineModule(sim, list(
   citation = list(),
   reqdPkgs = list("amc", "data.table", "quickPlot", "raster", "RColorBrewer", "reproducible"),
   parameters = rbind(
-    defineParameter(".plotInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first plot event should occur"),
-    defineParameter(".plotInterval", "numeric", 1, NA, NA, "This describes the interval between plot events"),
-    defineParameter(".saveInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first save event should occur"),
-    defineParameter(".saveInterval", "numeric", NA, NA, NA, "This describes the interval between save events"),
-    defineParameter(".useCache", "numeric", FALSE, NA, NA, "Should this entire module be run with caching activated?"),
     defineParameter("asymmetry", "numeric", 2, NA, NA, "The magnitude of the directional bias of spread"),
     defineParameter("asymmetryAngle", "numeric", 90, NA, NA, "The direction of the spread bias, in degrees from north"),
     defineParameter("dispersalInterval", "numeric", 1, NA, NA, "This describes the interval time between dispersal events"),
     defineParameter("dispersalKernel", "character", "NegExp", NA, NA, "Name of the dispersal kernel to use"),
-    defineParameter("dispersalKernelLambda", "numeric", 1, NA, NA, "Dispersal kernel lambda parameter")
+    defineParameter("dispersalKernelLambda", "numeric", 1, NA, NA, "Dispersal kernel lambda parameter"),
+    defineParameter(".plotInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first plot event should occur"),
+    defineParameter(".plotInterval", "numeric", 1, NA, NA, "This describes the interval between plot events"),
+    defineParameter(".saveInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first save event should occur"),
+    defineParameter(".saveInterval", "numeric", NA, NA, NA, "This describes the interval between save events"),
+    defineParameter(".useCache", "logical", FALSE, NA, NA, "Should this entire module be run with caching activated?")
   ),
   inputObjects = bind_rows(
     expectsInput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
@@ -45,7 +45,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
   switch(eventType,
     "init" = {
       # do stuff for this event
-      sim <- sim$mpbRedTopSpreadInit(sim)
+      sim <- Init(sim)
 
       # schedule future event(s)
       sim <- scheduleEvent(sim, time(sim) + P(sim)$dispersalInterval,
@@ -57,7 +57,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
       # ! ----- EDIT BELOW ----- ! #
       # do stuff for this event
 
-      sim <- sim$mpbRedTopSpreadDispersal(sim)
+      sim <- dispersal(sim)
 
       sim <- scheduleEvent(sim, time(sim) + P(sim)$dispersalInterval,
                            "mpbRedTopSpread", "dispersal")
@@ -78,24 +78,13 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 }
 
 .inputObjects <- function(sim) {
-  if (!suppliedElsewhere("studyArea")) {
-    prj <- paste("+proj=aea +lat_1=47.5 +lat_2=54.5 +lat_0=0 +lon_0=-113",
-                 "+x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs +ellps=GRS80 +towgs84=0,0,0")
-    sim$studyArea <- amc::loadStudyArea(dataPath(sim), "studyArea.kml", prj)
-  }
-
   return(invisible(sim))
 }
 
-## event functions
-#   - follow the naming convention `modulenameEventtype()`;
-#   - `modulenameInit()` function is required for initiliazation;
-#   - keep event functions short and clean, modularize by calling subroutines from section below.
-
 ### initilization
-mpbRedTopSpreadInit <- function(sim) {
+Init <- function(sim) {
   ## dispersal kernels
-  sim$dispKern <- switch(
+  mod$dispKern <- switch(
     P(sim)$dispersalKernel,
     "NegExp" = function(disFar, disNear, lambda) {
       (1 - exp(-lambda * disFar)) - (1 - exp(-lambda * disNear))
@@ -106,7 +95,7 @@ mpbRedTopSpreadInit <- function(sim) {
 }
 
 ### plotting
-mpbRedTopSpreadPlot <- function(sim) {
+plotFn <- function(sim) {
   # ! ----- EDIT BELOW ----- ! #
   # do stuff for this event
   #Plot("object")
@@ -116,10 +105,10 @@ mpbRedTopSpreadPlot <- function(sim) {
 }
 
 ### spread
-mpbRedTopSpreadDispersal <- function(sim) {
+dispersal <- function(sim) {
   ## check that MPB and pine rasters are the same resolution and ncells
 
-  stopifnot(all.equal(res(sim$massAttacksMap), res(sim$pineMap)))
+  stopifnot(all.equal(res(sim$massAttacksMap), res(sim$pineMap))) # TODO: use rasterToMatch
 
   ## X and Y map resolutions should be equal (square pixels)
   MAPRES <- unique(res(sim$massAttacksMap))
