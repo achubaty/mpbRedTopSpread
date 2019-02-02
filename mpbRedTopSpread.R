@@ -30,8 +30,18 @@ defineModule(sim, list(
     defineParameter(".useCache", "logical", FALSE, NA, NA, "Should this entire module be run with caching activated?")
   ),
   inputObjects = bind_rows(
-    expectsInput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
-    expectsInput("massAttacksMap", "RasterStack", "Current MPB attack map (number of red attacked trees).")
+    expectsInput("massAttacksDT", "data.table",
+                 desc = "Current MPB attack map (number of red attacked trees).",
+                 sourceURL = NA),
+    expectsInput("massAttacksMap", "RasterStack",
+                 desc = "Current MPB attack map (number of red attacked trees).",
+                 sourceURL = NA),
+    expectsInput("rasterToMatch", "RasterLayer",
+                 desc = "if not supplied, will default to standAgeMap", # TODO: description needed
+                 sourceURL = NA),
+    expectsInput("standAgeMap", "RasterLayer",
+                 desc = "stand age map in study area, default is Canada national stand age map",
+                 sourceURL = "http://tree.pfc.forestry.ca/kNN-StructureStandVolume.tar")
   ),
   outputObjects = bind_rows(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees).")
@@ -90,6 +100,31 @@ Init <- function(sim) {
       (1 - exp(-lambda * disFar)) - (1 - exp(-lambda * disNear))
     }
   )
+
+  ## stand age map
+  if (!suppliedElsewhere("standAgeMap", sim)) {
+    standAgeMapFilename <- file.path(dPath, "NFI_MODIS250m_kNN_Structure_Stand_Age_v0.tif")
+    sim$standAgeMap <- Cache(prepInputs,
+                             targetFile = basename(standAgeMapFilename),
+                             archive = asPath(c("kNN-StructureStandVolume.tar",
+                                                "NFI_MODIS250m_kNN_Structure_Stand_Age_v0.zip")),
+                             destinationPath = dPath,
+                             url = na.omit(extractURL("standAgeMap")),
+                             fun = "raster::raster",
+                             studyArea = sim$studyArea,
+                             #rasterToMatch = sim$rasterToMatch,
+                             method = "bilinear",
+                             datatype = "INT2U",
+                             filename2 = paste0(tools::file_path_sans_ext(basename(standAgeMapFilename)), "_cropped"),
+                             overwrite = TRUE,
+                             userTags = c("stable", currentModule(sim)))
+    sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
+  }
+
+  ## raster to match
+  if (!suppliedElsewhere("rasterToMatch", sim)) {
+    sim$rasterToMatch <- sim$standAgeMap
+  }
 
   return(invisible(sim))
 }
