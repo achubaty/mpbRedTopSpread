@@ -137,7 +137,7 @@ dispersal <- function(sim) {
   # lodgepole pine and jack pine together ## TODO: allow different parameterizations per species
   propPineMap <- sim$pineMap[["Pinu_sp"]] / 100
 browser()
-  SpaDES.tools::spread3(start = ,
+  SpaDES.tools::spread3(start = sim$massAttacksDT[ATKTREES > 0]$ID[1:100], ## TODO: remove the small subset 1:100
                         rasQuality = propPineMap,
                         rasAbundance = sim$currentAttacks,
                         advectionDir = P(sim)$advectionDir,
