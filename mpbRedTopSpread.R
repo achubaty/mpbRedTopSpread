@@ -130,7 +130,8 @@ Init <- function(sim) {
 plotFn <- function(sim) {
   # ! ----- EDIT BELOW ----- ! #
   # do stuff for this event
-  Plot(amc::dt2raster(sim$massAttacksDT, sim$massAttacksMap, "ATKTREES"))
+
+  #Plot(amc::dt2raster(sim$massAttacksDT, sim$massAttacksMap, "ATKTREES")) ## TODO: fix this
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
@@ -139,15 +140,11 @@ plotFn <- function(sim) {
 ### spread
 dispersal <- function(sim) {
   ## check that MPB and pine rasters are the same resolution and ncells
-
+browser()
   stopifnot(all.equal(res(sim$massAttacksMap), res(sim$pineMap))) # TODO: use rasterToMatch
 
-  ## X and Y map resolutions should be equal (square pixels)
-  MAPRES <- unique(res(sim$massAttacksMap))
-  stopifnot(length(MAPRES) == 1)
-
   ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (unpublished)
-  MAXTREES <- round(1125 * (MAPRES / 100) ^ 2)
+  MAXTREES <- 1125 * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
 
   ASYMM <- 5     ## TODO: parameterize this
   BIAS <- 90     ## TODO: parameterize this
@@ -158,7 +155,7 @@ dispersal <- function(sim) {
 
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together ## TODO: allow different parameterizations per species
-  propPineMap <- (sim$pineMap[["Jack_Pine"]] + sim$pineMap[["Lodgepole_Pine"]]) / 100
+  propPineMap <- sim$pineMap[["Pinu_sp"]] / 100
   insect_spread(r = propPineMap, loci = sim$massAttacksDT$ID,
                 asymmetry = ASYMM, asymmetryAngle = BIAS, lambda = LAMBDA,
                 saturationDensity = SATDENS, total = MAXTREES, Ncpus = 2, debug = DEBUG)
