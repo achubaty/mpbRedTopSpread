@@ -15,11 +15,9 @@ defineModule(sim, list(
   citation = list(),
   reqdPkgs = list("amc", "data.table", "quickPlot", "raster", "RColorBrewer", "reproducible"),
   parameters = rbind(
-    defineParameter("asymmetry", "numeric", 2, NA, NA, "The magnitude of the directional bias of spread"),
-    defineParameter("asymmetryAngle", "numeric", 90, NA, NA, "The direction of the spread bias, in degrees from north"),
-    defineParameter("dispersalInterval", "numeric", 1, NA, NA, "This describes the interval time between dispersal events"),
-    defineParameter("dispersalKernel", "character", "NegExp", NA, NA, "Name of the dispersal kernel to use"),
-    defineParameter("dispersalKernelLambda", "numeric", 1, NA, NA, "Dispersal kernel lambda parameter"),
+    defineParameter("advectionDir", "numeric", 90, NA, NA, "The direction of the spread bias, in degrees from north"),
+    defineParameter("advectionMag", "numeric", 3000, NA, NA, "The magnitude of the directional bias of spread"),
+    defineParameter("meanDist", "numeric", 1000, NA, NA, "Expected dispersal distance (m); ~63% go less than this distance"),
     defineParameter(".plotInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first plot event should occur"),
     defineParameter(".plotInterval", "numeric", 1, NA, NA, "This describes the interval between plot events"),
     defineParameter(".saveInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first save event should occur"),
@@ -27,10 +25,10 @@ defineModule(sim, list(
     defineParameter(".useCache", "logical", FALSE, NA, NA, "Should this entire module be run with caching activated?")
   ),
   inputObjects = bind_rows(
-    expectsInput("massAttacksDT", "data.table",
+    expectsInput("currentAttacks", "RasterLayer",
                  desc = "Current MPB attack map (number of red attacked trees).",
                  sourceURL = NA),
-    expectsInput("massAttacksMap", "RasterStack",
+    expectsInput("massAttacksDT", "data.table",
                  desc = "Current MPB attack map (number of red attacked trees).",
                  sourceURL = NA),
     expectsInput("rasterToMatch", "RasterLayer",
@@ -140,25 +138,25 @@ plotFn <- function(sim) {
 ### spread
 dispersal <- function(sim) {
   ## check that MPB and pine rasters are the same resolution and ncells
-browser()
-  stopifnot(all.equal(res(sim$massAttacksMap), res(sim$pineMap))) # TODO: use rasterToMatch
+  stopifnot(all.equal(res(sim$currentAttacks), res(sim$pineMap))) # TODO: use rasterToMatch
 
   ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (unpublished)
   MAXTREES <- 1125 * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
 
-  ASYMM <- 5     ## TODO: parameterize this
-  BIAS <- 90     ## TODO: parameterize this
-  LAMBDA <- 0.12 ## TODO: parameterize this
-  SATDENS <- 332 ## TODO: parameterize this
-
-  DEBUG <- FALSE ## TODO: parameterize this
-
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together ## TODO: allow different parameterizations per species
   propPineMap <- sim$pineMap[["Pinu_sp"]] / 100
-  insect_spread(r = propPineMap, loci = sim$massAttacksDT$ID,
-                asymmetry = ASYMM, asymmetryAngle = BIAS, lambda = LAMBDA,
-                saturationDensity = SATDENS, total = MAXTREES, Ncpus = 2, debug = DEBUG)
+browser()
+  SpaDES.tools::spread3(start = ,
+                        rasQuality = propPineMap,
+                        rasAbundance = sim$currentAttacks,
+                        advectionDir = P(sim)$advectionDir,
+                        advectionMag = P(sim)$advectionMag,
+                        meanDist = P(sim)$meanDist,
+                        plot.it = is.na(P(sim)$.plotInitialTime),
+                        minNumAgents = 0,
+                        verbose = 2,
+                        saveStack = FALSE)
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
