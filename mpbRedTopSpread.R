@@ -53,8 +53,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
       sim <- Init(sim)
 
       # schedule future event(s)
-      sim <- scheduleEvent(sim, time(sim) + P(sim)$dispersalInterval,
-                           "mpbRedTopSpread", "dispersal")
+      sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal")
       sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot")
       sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save")
     },
@@ -64,8 +63,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
       sim <- dispersal(sim)
 
-      sim <- scheduleEvent(sim, time(sim) + P(sim)$dispersalInterval,
-                           "mpbRedTopSpread", "dispersal")
+      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal")
 
       # ! ----- STOP EDITING ----- ! #
     },
@@ -88,14 +86,6 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
 ### initilization
 Init <- function(sim) {
-  ## dispersal kernels
-  mod$dispKern <- switch(
-    P(sim)$dispersalKernel,
-    "NegExp" = function(disFar, disNear, lambda) {
-      (1 - exp(-lambda * disFar)) - (1 - exp(-lambda * disNear))
-    }
-  )
-
   ## stand age map
   if (!suppliedElsewhere("standAgeMap", sim)) {
     standAgeMapFilename <- file.path(dPath, "NFI_MODIS250m_kNN_Structure_Stand_Age_v0.tif")
