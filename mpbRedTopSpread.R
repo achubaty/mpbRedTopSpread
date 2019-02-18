@@ -1,6 +1,3 @@
-
-# Everything in this file gets sourced during simInit, and all functions and objects
-#  are put into the simList. To use objects and functions, use sim$xxx.
 defineModule(sim, list(
   name = "mpbRedTopSpread",
   description = "Mountain Pine Beetle Red Top Growth Model: Short-run Potential for Establishment, Eruption, and Spread",
@@ -77,7 +74,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
     "plot" = {
       # ! ----- EDIT BELOW ----- ! #
 
-      plot(amc::dt2raster(sim$mpbSpreadDT))
+      sim <- plotFn(sim)
 
       # ! ----- STOP EDITING ----- ! #
     },
@@ -133,7 +130,7 @@ Init <- function(sim) {
 plotFn <- function(sim) {
   # ! ----- EDIT BELOW ----- ! #
   # do stuff for this event
-  #Plot("object")
+  plot(amc::dt2raster(sim$mpbSpreadDT))
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
