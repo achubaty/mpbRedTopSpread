@@ -130,7 +130,7 @@ Init <- function(sim) {
 plotFn <- function(sim) {
   # ! ----- EDIT BELOW ----- ! #
   # do stuff for this event
-  plot(amc::dt2raster(sim$massAttacksDT))
+  Plot(amc::dt2raster(sim$massAttacksDT, sim$massAttacksMap, "ATKTREES"))
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
