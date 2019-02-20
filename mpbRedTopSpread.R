@@ -178,8 +178,7 @@ dispersal <- function(sim) {
                         verbose = 2,
                         saveStack = saveStack)) ## saveStack is the filename to save to
   if (EliotTesting) {
-    tmpStack <<- saveStack
-    tmpStackObj <- stack(tmpStack)
+    tmpStackObj <- stack(saveStack)
     ex <- extent(tmpStackObj)
     ex@ymax <- ex@ymax - 1000
     ex@ymin <- 7389000
