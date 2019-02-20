@@ -146,7 +146,7 @@ browser()
                         plot.it = is.na(P(sim)$.plotInitialTime),
                         minNumAgents = 0,
                         verbose = 2,
-                        saveStack = FALSE)
+                        saveStack = NULL) ## saveStack is the filename to save to
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
