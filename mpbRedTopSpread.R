@@ -143,7 +143,7 @@ dispersal <- function(sim) {
   if (exists("EliotTesting")) {
     EliotTesting <- TRUE
     sim@params$mpbRedTopSpread$bgSettlingProp <- 0.7
-    sim@params$mpbRedTopSpread$advectionMag <- 9000
+    sim@params$mpbRedTopSpread$advectionMag <- 20000
     minNumAgents <- 200
     sim@params$mpbRedTopSpread$.plotInitialTime <- NA
   } else {
@@ -158,7 +158,7 @@ dispersal <- function(sim) {
     d[starts] <- 1
     d <- crop(d, a)
     starts <- which(d[] > 0)
-    currentAttacks <- crop(sim$currentAttacks, a) * 100
+    currentAttacks <- crop(sim$currentAttacks, a) * 300
     propPineMap <- crop(propPineMap, a)
     saveStack <- raster::rasterTmpFile()
 
@@ -182,12 +182,13 @@ dispersal <- function(sim) {
   if (EliotTesting) {
     tmpStackObj <- stack(saveStack)
     ex <- extent(tmpStackObj)
-    ex@ymax <- ex@ymax - 1000
+    ex@ymax <- ex@ymax - 4000
     ex@ymin <- 7389000
     ex@xmax <- -901000
-    out2 <- crop(tmpStackObj, ex)
+    out2 <- crop(tmpStackObj, ex) * 10
     if (require(animation)) {
-      gifName <- file.path(tempdir(), "animation.gif")
+      gifName <- "C:\\Eliot\\Google Drive\\McIntire-lab\\figures\\MPB animation 700px small area 3.gif"
+      #gifName <- file.path(tempdir(), "animation.gif")
       saveGIF(interval = 0.1, ani.height = 700, ani.width = 700, movie.name = gifName, expr = {
         for (i in seq(numLayers(out2))) plot(out2[[i]])
       })
