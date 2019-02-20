@@ -142,8 +142,9 @@ dispersal <- function(sim) {
   propPineMap[is.na(propPineMap[])] <- 0
   if (exists("EliotTesting")) {
     EliotTesting <- TRUE
-    sim@params$mpbRedTopSpread$bgSettlingProp <- 0.4
-    sim@params$mpbRedTopSpread$advectionMag <- 30000
+    sim@params$mpbRedTopSpread$bgSettlingProp <- 0.7
+    sim@params$mpbRedTopSpread$advectionMag <- 9000
+    minNumAgents <- 200
     sim@params$mpbRedTopSpread$.plotInitialTime <- NA
   } else {
     EliotTesting <- FALSE
@@ -157,24 +158,25 @@ dispersal <- function(sim) {
     d[starts] <- 1
     d <- crop(d, a)
     starts <- which(d[] > 0)
-    b <- crop(sim$currentAttacks, a) * 100
+    currentAttacks <- crop(sim$currentAttacks, a) * 100
     propPineMap <- crop(propPineMap, a)
     saveStack <- raster::rasterTmpFile()
 
   } else {
+    minNumAgents <- 50
     starts <- sim$massAttacksDT[ATKTREES > 0]$ID
     saveStack <- NULL
-    b <- sim$currentAttacks
+    currentAttacks <- sim$currentAttacks
   }
 
   st1 <- system.time(out <- SpaDES.tools::spread3(start = starts, ## TODO: remove the small subset 1:100
                         rasQuality = propPineMap,
-                        rasAbundance = b,#sim$currentAttacks,
+                        rasAbundance = currentAttacks,#sim$currentAttacks,
                         advectionDir = P(sim)$advectionDir,
                         advectionMag = P(sim)$advectionMag,
                         meanDist = P(sim)$meanDist,
                         plot.it = !is.na(P(sim)$.plotInitialTime),
-                        minNumAgents = 100,
+                        minNumAgents = minNumAgents,
                         verbose = 2,
                         saveStack = saveStack)) ## saveStack is the filename to save to
   if (EliotTesting) {
