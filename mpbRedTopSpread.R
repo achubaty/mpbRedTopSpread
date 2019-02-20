@@ -142,8 +142,8 @@ dispersal <- function(sim) {
   propPineMap[is.na(propPineMap[])] <- 0
   if (exists("EliotTesting")) {
     EliotTesting <- TRUE
-    browser()
     sim@params$mpbRedTopSpread$bgSettlingProp <- 0.4
+    sim@params$mpbRedTopSpread$advectionMag <- 30000
     sim@params$mpbRedTopSpread$.plotInitialTime <- NA
   } else {
     EliotTesting <- FALSE
@@ -190,7 +190,6 @@ dispersal <- function(sim) {
         for (i in seq(numLayers(out2))) plot(out2[[i]])
       })
     }
-
     stop("End it here")
   }
   migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
@@ -200,18 +199,4 @@ dispersal <- function(sim) {
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
