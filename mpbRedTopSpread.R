@@ -15,8 +15,9 @@ defineModule(sim, list(
   citation = list(),
   reqdPkgs = list("amc", "data.table", "quickPlot", "raster", "RColorBrewer", "reproducible"),
   parameters = rbind(
-    defineParameter("advectionDir", "numeric", 90, NA, NA, "The direction of the spread bias, in degrees from north"),
+    defineParameter("advectionDir", "numeric", 90, 0, 359.9999, "The direction of the spread bias, in degrees from north"),
     defineParameter("advectionMag", "numeric", 3000, NA, NA, "The magnitude of the directional bias of spread"),
+    defineParameter("bgSettlingProp", "numeric", 0.1, 0, 1, "The proportion of beetles that settle from those that could potentially settle, even if no pine"),
     defineParameter("meanDist", "numeric", 1000, NA, NA, "Expected dispersal distance (m); ~63% go less than this distance"),
     defineParameter(".plotInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first plot event should occur"),
     defineParameter(".plotInterval", "numeric", 1, NA, NA, "This describes the interval between plot events"),
@@ -53,7 +54,8 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
       sim <- Init(sim)
 
       # schedule future event(s)
-      sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal")
+      sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal",
+                           eventPriority = 4.5)
       sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot")
       sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save")
     },
@@ -63,7 +65,8 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
       sim <- dispersal(sim)
 
-      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal")
+      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal",
+                           eventPriority = 4.5)
 
       # ! ----- STOP EDITING ----- ! #
     },
@@ -135,19 +138,81 @@ dispersal <- function(sim) {
 
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together ## TODO: allow different parameterizations per species
-  propPineMap <- sim$pineMap[["Pinu_sp"]] / 100
-browser()
-  SpaDES.tools::spread3(start = sim$massAttacksDT[ATKTREES > 0]$ID[1:100], ## TODO: remove the small subset 1:100
+  propPineMap <- sim$pineMap[["Pinu_sp"]]# / 100
+  propPineMap[is.na(propPineMap[])] <- 0
+  if (exists("EliotTesting")) {
+    EliotTesting <- TRUE
+    browser()
+    sim@params$mpbRedTopSpread$bgSettlingProp <- 0.4
+    sim@params$mpbRedTopSpread$.plotInitialTime <- NA
+  } else {
+    EliotTesting <- FALSE
+  }
+  propPineMap[] <- pmin(1, propPineMap[]/100 + P(sim)$bgSettlingProp)
+
+  if (EliotTesting) { # TODO -- delete EliotTesting when no longer desired
+    a <- extent(sim$studyArea)
+    starts <- sim$massAttacksDT[ATKTREES > 0]$ID
+    d <- raster(sim$currentAttacks)
+    d[starts] <- 1
+    d <- crop(d, a)
+    starts <- which(d[] > 0)
+    b <- crop(sim$currentAttacks, a) * 100
+    propPineMap <- crop(propPineMap, a)
+    saveStack <- raster::rasterTmpFile()
+
+  } else {
+    starts <- sim$massAttacksDT[ATKTREES > 0]$ID
+    saveStack <- NULL
+    b <- sim$currentAttacks
+  }
+
+  st1 <- system.time(out <- SpaDES.tools::spread3(start = starts, ## TODO: remove the small subset 1:100
                         rasQuality = propPineMap,
-                        rasAbundance = sim$currentAttacks,
+                        rasAbundance = b,#sim$currentAttacks,
                         advectionDir = P(sim)$advectionDir,
                         advectionMag = P(sim)$advectionMag,
                         meanDist = P(sim)$meanDist,
-                        plot.it = is.na(P(sim)$.plotInitialTime),
-                        minNumAgents = 0,
+                        plot.it = !is.na(P(sim)$.plotInitialTime),
+                        minNumAgents = 100,
                         verbose = 2,
-                        saveStack = NULL) ## saveStack is the filename to save to
+                        saveStack = saveStack)) ## saveStack is the filename to save to
+  if (EliotTesting) {
+    tmpStack <<- saveStack
+    tmpStackObj <- stack(tmpStack)
+    ex <- extent(tmpStackObj)
+    ex@ymax <- ex@ymax - 1000
+    ex@ymin <- 7389000
+    ex@xmax <- -901000
+    out2 <- crop(tmpStackObj, ex)
+    if (require(animation)) {
+      gifName <- file.path(tempdir(), "animation.gif")
+      saveGIF(interval = 0.1, ani.height = 700, ani.width = 700, movie.name = gifName, expr = {
+        for (i in seq(numLayers(out2))) plot(out2[[i]])
+      })
+    }
+
+    stop("End it here")
+  }
+  migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
+  out2 <- sim$massAttacksDT[migrantsDT, on = c(ID = "pixels")]
+
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
