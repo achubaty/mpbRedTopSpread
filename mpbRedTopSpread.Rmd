@@ -25,4 +25,3 @@ Currently, the module implements a negative exponential dispersal kernel (others
 
 ![](modules/mpbRedTopSpread/sample_spread.png)
 
-#### References

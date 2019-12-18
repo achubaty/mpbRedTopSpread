@@ -54,8 +54,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
       sim <- Init(sim)
 
       # schedule future event(s)
-      sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal",
-                           eventPriority = 4.5)
+      sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
       sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot")
       sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save")
     },
@@ -65,8 +64,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
       sim <- dispersal(sim)
 
-      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal",
-                           eventPriority = 4.5)
+      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
 
       # ! ----- STOP EDITING ----- ! #
     },
@@ -138,7 +136,7 @@ dispersal <- function(sim) {
 
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together ## TODO: allow different parameterizations per species
-  propPineMap <- sim$pineMap[["Pinu_sp"]]# / 100
+  propPineMap <- (sim$pineMap[["Pinu_Ban"]] + sim$pineMap[["Pinu_Con_Lat"]]) / 100
   propPineMap[is.na(propPineMap[])] <- 0
   if (exists("EliotTesting")) {
     EliotTesting <- TRUE
@@ -149,7 +147,7 @@ dispersal <- function(sim) {
   } else {
     EliotTesting <- FALSE
   }
-  propPineMap[] <- pmin(1, propPineMap[]/100 + P(sim)$bgSettlingProp)
+  propPineMap[] <- pmin(1, propPineMap[] / 100 + P(sim)$bgSettlingProp)
 
   if (EliotTesting) { # TODO -- delete EliotTesting when no longer desired
     a <- extent(sim$studyArea)
@@ -161,7 +159,6 @@ dispersal <- function(sim) {
     currentAttacks <- crop(sim$currentAttacks, a) * 300
     propPineMap <- crop(propPineMap, a)
     saveStack <- raster::rasterTmpFile()
-
   } else {
     minNumAgents <- 50
     starts <- sim$massAttacksDT[ATKTREES > 0]$ID
@@ -169,37 +166,46 @@ dispersal <- function(sim) {
     currentAttacks <- sim$currentAttacks
   }
 
-  st1 <- system.time(out <- SpaDES.tools::spread3(start = starts, ## TODO: remove the small subset 1:100
-                        rasQuality = propPineMap,
-                        rasAbundance = currentAttacks,#sim$currentAttacks,
-                        advectionDir = P(sim)$advectionDir,
-                        advectionMag = P(sim)$advectionMag,
-                        meanDist = P(sim)$meanDist,
-                        plot.it = !is.na(P(sim)$.plotInitialTime),
-                        minNumAgents = minNumAgents,
-                        verbose = 2,
-                        saveStack = saveStack)) ## saveStack is the filename to save to
+  st1 <- system.time({
+    out <- SpaDES.tools::spread3(start = starts,
+                                 rasQuality = propPineMap,
+                                 rasAbundance = currentAttacks,
+                                 advectionDir = P(sim)$advectionDir,
+                                 advectionMag = P(sim)$advectionMag,
+                                 meanDist = P(sim)$meanDist,
+                                 plot.it = !is.na(P(sim)$.plotInitialTime),
+                                 minNumAgents = minNumAgents,
+                                 verbose = 2,
+                                 saveStack = saveStack) ## saveStack is the filename to save to
+  })
   if (EliotTesting) {
-    tmpStackObj <- stack(saveStack)
-    ex <- extent(tmpStackObj)
-    ex@ymax <- ex@ymax - 4000
-    ex@ymin <- 7389000
-    ex@xmax <- -901000
-    out2 <- crop(tmpStackObj, ex) * 10
-    if (require(animation)) {
-      gifName <- "C:\\Eliot\\Google Drive\\McIntire-lab\\figures\\MPB animation 700px small area 3.gif"
-      #gifName <- file.path(tempdir(), "animation.gif")
-      saveGIF(interval = 0.1, ani.height = 700, ani.width = 700, movie.name = gifName, expr = {
-        for (i in seq(numLayers(out2))) plot(out2[[i]])
-      })
-    }
-    stop("End it here")
+    fname <- file.path(outputPath(sim), paste0("spread", current(sim)$eventTime, ".tif"))
+    tf <- raster::rasterTmpFile()
+    r <- stack(saveStack)
+    r2 <- calc(r, sum, filename = tf, overwrite = TRUE)
+    writeRaster(r2, fname, overwrite = TRUE)
+    unlink(saveStack, tf)
   }
+
+  # if (EliotTesting) {
+  #   tmpStackObj <- stack(saveStack)
+  #   ex <- extent(tmpStackObj)
+  #   ex@ymax <- ex@ymax - 4000
+  #   ex@ymin <- 7389000
+  #   ex@xmax <- -901000
+  #   out2 <- crop(tmpStackObj, ex) * 10
+  #   if (require(animation)) {
+  #     gifName <- "C:\\Eliot\\Google Drive\\McIntire-lab\\figures\\MPB animation 700px small area 3.gif"
+  #     #gifName <- file.path(tempdir(), "animation.gif")
+  #     saveGIF(interval = 0.1, ani.height = 700, ani.width = 700, movie.name = gifName, expr = {
+  #       for (i in seq(numLayers(out2))) plot(out2[[i]])
+  #     })
+  #   }
+  #   stop("End it here")
+  # }
   migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
   out2 <- sim$massAttacksDT[migrantsDT, on = c(ID = "pixels")]
-
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
 }
-
