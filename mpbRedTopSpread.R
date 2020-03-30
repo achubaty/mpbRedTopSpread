@@ -13,7 +13,8 @@ defineModule(sim, list(
   timeframe = as.POSIXlt(c(NA, NA)),
   timeunit = "year",
   citation = list(),
-  reqdPkgs = list("amc", "data.table", "quickPlot", "raster", "RColorBrewer", "reproducible"),
+  reqdPkgs = list("achubaty/amc@development", "data.table", "quickPlot",
+                  "raster", "RColorBrewer", "reproducible"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999, "The direction of the spread bias, in degrees from north"),
     defineParameter("advectionMag", "numeric", 3000, NA, NA, "The magnitude of the directional bias of spread"),
@@ -37,7 +38,10 @@ defineModule(sim, list(
                  sourceURL = NA),
     expectsInput("standAgeMap", "RasterLayer",
                  desc = "stand age map in study area, default is Canada national stand age map",
-                 sourceURL = "http://tree.pfc.forestry.ca/kNN-StructureStandVolume.tar")
+                 sourceURL = paste0("http://ftp.maps.canada.ca/pub/nrcan_rncan/Forests_Foret/",
+                                    "canada-forests-attributes_attributs-forests-canada/",
+                                    "2001-attributes_attributs-2001/",
+                                    "NFI_MODIS250m_2001_kNN_Structure_Stand_Age_v1.tif")),
   ),
   outputObjects = bind_rows(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees).")
@@ -82,28 +86,12 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 }
 
 .inputObjects <- function(sim) {
-  return(invisible(sim))
-}
-
-### initilization
-Init <- function(sim) {
-  ## stand age map
+    ## stand age map
   if (!suppliedElsewhere("standAgeMap", sim)) {
-    standAgeMapFilename <- file.path(dPath, "NFI_MODIS250m_kNN_Structure_Stand_Age_v0.tif")
-    sim$standAgeMap <- Cache(prepInputs,
-                             targetFile = basename(standAgeMapFilename),
-                             archive = asPath(c("kNN-StructureStandVolume.tar",
-                                                "NFI_MODIS250m_kNN_Structure_Stand_Age_v0.zip")),
-                             destinationPath = dPath,
-                             url = na.omit(extractURL("standAgeMap")),
-                             fun = "raster::raster",
-                             studyArea = sim$studyArea,
-                             #rasterToMatch = sim$rasterToMatch,
-                             method = "bilinear",
-                             datatype = "INT2U",
-                             filename2 = paste0(tools::file_path_sans_ext(basename(standAgeMapFilename)), "_cropped"),
-                             overwrite = TRUE,
-                             userTags = c("stable", currentModule(sim)))
+    sim$standAgeMap <- amc::loadkNNageMap(path = dPath,
+                                          url = na.omit(extractURL("standAgeMap")),
+                                          studyArea = sim$studyArea,
+                                          userTags = c("stable", currentModule(sim)))
     sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
   }
 
@@ -112,6 +100,11 @@ Init <- function(sim) {
     sim$rasterToMatch <- sim$standAgeMap
   }
 
+  return(invisible(sim))
+}
+
+### initilization
+Init <- function(sim) {
   return(invisible(sim))
 }
 
