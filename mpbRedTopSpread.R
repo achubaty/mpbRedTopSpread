@@ -90,7 +90,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
   if (!suppliedElsewhere("standAgeMap", sim)) {
     sim$standAgeMap <- amc::loadkNNageMap(path = dPath,
                                           url = na.omit(extractURL("standAgeMap")),
-                                          studyArea = sim$studyArea,
+                                          studyArea = sim$studyAreaLarge,
                                           userTags = c("stable", currentModule(sim)))
     sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
   }
@@ -122,14 +122,14 @@ plotFn <- function(sim) {
 ### spread
 dispersal <- function(sim) {
   ## check that MPB and pine rasters are the same resolution and ncells
-  stopifnot(all.equal(res(sim$currentAttacks), res(sim$pineMap))) # TODO: use rasterToMatch
+  stopifnot(compareRaster(sim$rasterToMatch, sim$currentAttacks, sim$pineMap, orig = TRUE))
 
-  ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (unpublished)
+  ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
   MAXTREES <- 1125 * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
 
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together ## TODO: allow different parameterizations per species
-  propPineMap <- (sim$pineMap[["Pinu_Ban"]] + sim$pineMap[["Pinu_Con_Lat"]]) / 100
+  propPineMap <- (sim$pineMap[["Pinu_Ban"]] + sim$pineMap[["Pinu_Con"]]) / 100
   propPineMap[is.na(propPineMap[])] <- 0
   if (exists("EliotTesting")) {
     EliotTesting <- TRUE
