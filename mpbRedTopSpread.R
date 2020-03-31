@@ -16,15 +16,24 @@ defineModule(sim, list(
   reqdPkgs = list("achubaty/amc@development", "data.table", "quickPlot",
                   "raster", "RColorBrewer", "reproducible"),
   parameters = rbind(
-    defineParameter("advectionDir", "numeric", 90, 0, 359.9999, "The direction of the spread bias, in degrees from north"),
-    defineParameter("advectionMag", "numeric", 3000, NA, NA, "The magnitude of the directional bias of spread"),
-    defineParameter("bgSettlingProp", "numeric", 0.1, 0, 1, "The proportion of beetles that settle from those that could potentially settle, even if no pine"),
-    defineParameter("meanDist", "numeric", 1000, NA, NA, "Expected dispersal distance (m); ~63% go less than this distance"),
-    defineParameter(".plotInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first plot event should occur"),
-    defineParameter(".plotInterval", "numeric", 1, NA, NA, "This describes the interval between plot events"),
-    defineParameter(".saveInitialTime", "numeric", NA, NA, NA, "This describes the simulation time at which the first save event should occur"),
-    defineParameter(".saveInterval", "numeric", NA, NA, NA, "This describes the interval between save events"),
-    defineParameter(".useCache", "logical", FALSE, NA, NA, "Should this entire module be run with caching activated?")
+    defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
+                    "The direction of the spread bias, in degrees from north"),
+    defineParameter("advectionMag", "numeric", 1000, NA, NA,
+                    "The magnitude of the directional bias of spread"),
+    defineParameter("bgSettlingProp", "numeric", 0.1, 0, 1,
+                    "The proportion of beetles that settle from those that could potentially settle, even if no pine"),
+    defineParameter("meanDist", "numeric", 1000, NA, NA,
+                    "Expected dispersal distance (m); ~63% go less than this distance"),
+    defineParameter(".plotInitialTime", "numeric", NA, NA, NA,
+                    "This describes the simulation time at which the first plot event should occur"),
+    defineParameter(".plotInterval", "numeric", 1, NA, NA,
+                    "This describes the interval between plot events"),
+    defineParameter(".saveInitialTime", "numeric", NA, NA, NA,
+                    "This describes the simulation time at which the first save event should occur"),
+    defineParameter(".saveInterval", "numeric", NA, NA, NA,
+                    "This describes the interval between save events"),
+    defineParameter(".useCache", "logical", FALSE, NA, NA,
+                    "Should this entire module be run with caching activated?")
   ),
   inputObjects = bind_rows(
     expectsInput("currentAttacks", "RasterLayer",
@@ -59,25 +68,16 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
       # schedule future event(s)
       sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
-      sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot")
-      sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save")
+      sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", .last() - 1)
+      sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save", .last())
     },
     "dispersal" = {
-      # ! ----- EDIT BELOW ----- ! #
-      # do stuff for this event
-
       sim <- dispersal(sim)
-
       sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
-
-      # ! ----- STOP EDITING ----- ! #
     },
     "plot" = {
-      # ! ----- EDIT BELOW ----- ! #
-
       sim <- plotFn(sim)
-
-      # ! ----- STOP EDITING ----- ! #
+      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "plot", eventPriority = .last() - 1)
     },
     warning(paste("Undefined event type: '", events(sim)[1, "eventType", with = FALSE],
                   "' in module '", events(sim)[1, "moduleName", with = FALSE], "'", sep = ""))
@@ -110,12 +110,11 @@ Init <- function(sim) {
 
 ### plotting
 plotFn <- function(sim) {
-  # ! ----- EDIT BELOW ----- ! #
-  # do stuff for this event
+  r <- raster(sim$massAttacksMap[[1]]) ## use a template
+  atkMap <- amc::dt2raster(sim$massAttacksDT, r, "ATKTREES")
+  setColors(atkMap) <- RColorBrewer::brewer.pal(n = 9, name = "YlOrRd")
+  Plot(atkMap, title = "Simulated Attacks")
 
-  #Plot(amc::dt2raster(sim$massAttacksDT, sim$massAttacksMap, "ATKTREES")) ## TODO: fix this
-
-  # ! ----- STOP EDITING ----- ! #
   return(invisible(sim))
 }
 
@@ -128,8 +127,8 @@ dispersal <- function(sim) {
   MAXTREES <- 1125 * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
 
   ## asymmetric spread (biased eastward)
-  # lodgepole pine and jack pine together ## TODO: allow different parameterizations per species
-  propPineMap <- (sim$pineMap[["Pinu_Ban"]] + sim$pineMap[["Pinu_Con"]]) / 100
+  # lodgepole pine and jack pine together
+  propPineMap <- sum(sim$pineMap) / 100 ## much faster than calc; ## TODO: allow different params per species
   propPineMap[is.na(propPineMap[])] <- 0
   if (exists("EliotTesting")) {
     EliotTesting <- TRUE
@@ -140,7 +139,7 @@ dispersal <- function(sim) {
   } else {
     EliotTesting <- FALSE
   }
-  propPineMap[] <- pmin(1, propPineMap[] / 100 + P(sim)$bgSettlingProp)
+  propPineMap[] <- pmin(1, propPineMap[] / 100 + P(sim)$bgSettlingProp) ## TODO: why divide by 100??
 
   if (EliotTesting) { # TODO -- delete EliotTesting when no longer desired
     a <- extent(sim$studyArea)
@@ -154,7 +153,7 @@ dispersal <- function(sim) {
     saveStack <- raster::rasterTmpFile()
   } else {
     minNumAgents <- 50
-    starts <- sim$massAttacksDT[ATKTREES > 0]$ID
+    starts <- sim$massAttacksDT[ATKTREES > 0][["ID"]]
     saveStack <- NULL
     currentAttacks <- sim$currentAttacks
   }
