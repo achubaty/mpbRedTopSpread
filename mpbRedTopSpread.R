@@ -35,7 +35,7 @@ defineModule(sim, list(
     defineParameter(".useCache", "logical", FALSE, NA, NA,
                     "Should this entire module be run with caching activated?")
   ),
-  inputObjects = bind_rows(
+  inputObjects = bindrows(
     expectsInput("currentAttacks", "RasterLayer",
                  desc = "Current MPB attack map (number of red attacked trees).",
                  sourceURL = NA),
@@ -52,7 +52,7 @@ defineModule(sim, list(
                                     "2001-attributes_attributs-2001/",
                                     "NFI_MODIS250m_2001_kNN_Structure_Stand_Age_v1.tif")),
   ),
-  outputObjects = bind_rows(
+  outputObjects = bindrows(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees).")
   )
 ))
