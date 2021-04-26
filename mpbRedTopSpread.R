@@ -14,6 +14,7 @@ defineModule(sim, list(
   timeunit = "year",
   citation = list(),
   reqdPkgs = list("achubaty/amc@development", "data.table", "quickPlot",
+                  "PredictiveEcology/LandR@development",
                   "raster", "RColorBrewer", "reproducible"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
@@ -86,18 +87,26 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 }
 
 .inputObjects <- function(sim) {
-    ## stand age map
-  if (!suppliedElsewhere("standAgeMap", sim)) {
-    sim$standAgeMap <- amc::loadkNNageMap(path = dPath,
-                                          url = na.omit(extractURL("standAgeMap")),
-                                          studyArea = sim$studyAreaLarge,
-                                          userTags = c("stable", currentModule(sim)))
-    sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
-  }
-
   ## raster to match
   if (!suppliedElsewhere("rasterToMatch", sim)) {
-    sim$rasterToMatch <- sim$standAgeMap
+    sim$rasterToMatch <- Cache(
+      LandR::prepInputsLCC,
+      year = 2005,
+      destinationPath = dPath,
+      studyArea = sim$studyArea
+    )
+  }
+
+  ## stand age map
+  if (!suppliedElsewhere("standAgeMap", sim)) {
+    sim$standAgeMap <- LandR::prepInputsStandAgeMap(
+      ageUrl = na.omit(extractURL("standAgeMap")),
+      destinationPath = dPath,
+      studyArea = sim$studyArea,
+      rasterToMatch = sim$rasterToMatch,
+      userTags = c("stable", currentModule(sim)) ## TODO: does this need rasterToMatch? it IS rtm!
+    )
+    sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
   }
 
   return(invisible(sim))
