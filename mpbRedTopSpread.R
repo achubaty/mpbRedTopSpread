@@ -206,7 +206,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 rasAbundance = currentAttacks,
                                 advectionDir = advectionDir,
                                 advectionMag = advectionMag,
-                                meanDist = rnorm(1, p[[1]], p[[1]]/5),
+                                meanDist = rnorm(1, p[[1]], p[[1]]/2),
                                 plot.it = FALSE,
                                 minNumAgents = minNumAgents,
                                 verbose = 0,
@@ -295,6 +295,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
                    quotedSpread) {
+  if (reps < 10) {
+    message("reps must be at least 10; setting to 10")
+    reps <- 10
+  }
   if (missing(starts))
     starts <- get("starts", envir = .GlobalEnv)
   if (missing(propPineMap))
@@ -311,49 +315,56 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
     minNumAgents <- get("minNumAgents", envir = .GlobalEnv)
   if (missing(currentTime))
     currentTime <- get("currentTime", envir = .GlobalEnv)
-  if (missing(p))
-    p <- get("p", envir = .GlobalEnv)
 
   allYears <- names(massAttacksMap)
 
-  combinations <- expand.grid(reps = seq(reps), years = seq_along(allYears[-1]))
+  combinations <- seq_along(allYears[-1])
   years <- data.frame(
     startYears = allYears[-length(allYears)],
     endYears = allYears[-1])
-  combinations <- cbind(combinations, years[combinations[, "years"], ])
-  combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
+  # combinations <- cbind(combinations, years[combinations[, "years"], ])
+  # combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
 
-  outBig <- purrr::pmap(.l = combinations,
+  outBig <- purrr::pmap(.l = years,
               massAttacksMap = massAttacksMap,
               advDir = advectionDir,
               advMag = advectionMag,
-              p = p,
+              p = p, reps = reps,
               minNumAgents = minNumAgents,
               propPineMapInner = propPineMap,
               .f = function(reps, startYears, endYears, p, minNumAgents, massAttacksMap, propPineMapInner, starts,
                             advDir, advMag) {
                 currentAttacks <- massAttacksMap[[startYears]]
-                out <- eval(quotedSpread)
-                atks <- out[, list(abundSettled  = sum(abundSettled)), by = c("pixels")]
-                # nPix <- atks[abundSettled > 0, .N] ## total number of pixels
+                env <- environment()
+                out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
+                out <- rbindlist(out, idcol = "rep")
+
+                atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) * 1125 * 6.25), by = c("rep", "pixels")]
+                # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
 
                 ## attacked area from data
-                atksRas <- massAttacksMap[[endYears]]
-                atksKnown <- data.table(pixels = 1L:ncell(atksRas), ATKTREES = atksRas[])
-                atksKnown <- atksKnown[ATKTREES > 0]
-                likelihood <- sapply(1:NROW(atksKnown), function(rowNum) {
-                  pix <- atksKnown[["pixels"]][rowNum]
-                  wh <- which(atks[["pixels"]]==pix)
-                  prob <- if (length(wh) >= 2) {
+                atksRasNextYr <- massAttacksMap[[endYears]]
+                wh <- which(atksRasNextYr[] > 0)
+                atksKnownNextYr <- setDT(list(pixels = wh, ATKTREES = atksRasNextYr[][wh]))
+                # atksKnownNextYr <- atksKnownNextYr[ATKTREES > 0]
+                # i <- 1
+                oo <- atksNextYearSims[atksKnownNextYr, on = "pixels", nomatch = NA]
+                oo[, ATKTREES := ATKTREES[1], by = "pixels"]
 
-                    #    i <<- i + 1
-                    max(1e-14, demp(atksKnown[["ATKTREES"]][rowNum], atks[["abundSettled"]][wh]))
+                #i <- 0
+                probs <- oo[, list(prob = {
+                  prob <- if (.N > 2) {
+                  #  i <<- i + 1
+                   # print(i)
+                    max(1e-14, demp(ATKTREES[1], abundSettled))
+
                   } else {
                     1e-14
                   }
-                  prob
-                })
-                nll <- sum(-log(likelihood))
+                }), by = "pixels"]
+
+                print(paste("Done startYear: ", startYears))
+                nll <- sum(-log(probs$prob))
               })
 
   sum(unlist(outBig))
