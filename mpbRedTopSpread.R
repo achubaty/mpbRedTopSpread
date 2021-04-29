@@ -196,8 +196,9 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
   # browser()
-  p <- params[["meanDist"]]
-  objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread"))
+  p <- do.call(c, params[c("meanDist", "advectionMag")])
+  fitType <- "logSAD"
+  objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
   quotedSpread <-
@@ -205,22 +206,23 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 rasQuality = propPineMap,
                                 rasAbundance = currentAttacks,
                                 advectionDir = advectionDir,
-                                advectionMag = advectionMag,
-                                meanDist = rnorm(1, p[[1]], p[[1]]/2),
+                                advectionMag = p[2],
+                                meanDist = p[1], #rnorm(1, p[[1]], p[[1]]/2),
                                 plot.it = FALSE,
                                 minNumAgents = minNumAgents,
                                 verbose = 0,
                                 skipChecks = TRUE,
                                 saveStack = NULL))
   if (isTRUE(type == "fit")) {
-    DEout <- DEoptim(fn = objFun, lower = 500, upper = 4000, reps = 1,
-                     quotedSpread = quotedSpread)
+    DEout <- DEoptim(fn = objFun, lower = c(500, 500), upper = c(8000, 8000), reps = 1,
+                     quotedSpread = quotedSpread, fitType = fitType)
   } else {
-    out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p)
+    out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType)
     out <- eval(quotedSpread)
   }
 
 
+  browser()
 
 
   ## sum negative log likelihood for attacked pixels
@@ -294,11 +296,11 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
 objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
-                   quotedSpread) {
-  if (reps < 10) {
-    message("reps must be at least 10; setting to 10")
-    reps <- 10
-  }
+                   quotedSpread, fitType = "ss1") {
+  # if (reps < 10) {
+  #   message("reps must be at least 10; setting to 10")
+  #   reps <- 10
+  # }
   if (missing(starts))
     starts <- get("starts", envir = .GlobalEnv)
   if (missing(propPineMap))
@@ -315,6 +317,8 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
     minNumAgents <- get("minNumAgents", envir = .GlobalEnv)
   if (missing(currentTime))
     currentTime <- get("currentTime", envir = .GlobalEnv)
+  if (missing(fitType))
+    fitType <- get("fitType", envir = .GlobalEnv)
 
   allYears <- names(massAttacksMap)
 
@@ -352,20 +356,36 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
                 oo[, ATKTREES := ATKTREES[1], by = "pixels"]
 
                 #i <- 0
-                probs <- oo[, list(prob = {
-                  prob <- if (.N > 2) {
-                  #  i <<- i + 1
-                   # print(i)
-                    max(1e-14, demp(ATKTREES[1], abundSettled))
+                if (fitType == "likelihood") {
+                  probs <- oo[, list(prob = {
+                    prob <- if (.N > 2) {
+                      i <<- i + 1
+                      # print(i)
 
-                  } else {
-                    1e-14
+                      max(1e-14, demp(ATKTREES[1], abundSettled))
+
+                    } else {
+                      1e-14
+                    }
+                  }), by = "pixels"]
+                  objFunVal <- sum(-log(probs$prob))
+                } else {
+                  oo[is.na(abundSettled),  abundSettled := 0]
+                  if (fitType == "ss1") {
+                    objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
+                  } else if (fitType == "logSAD") {
+                    objFunVal <- log(abs(oo$ATKTREES - oo$abundSettled))
+                    isInf <- is.infinite(objFunVal)
+                    if (any(isInf))
+                      objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
                   }
-                }), by = "pixels"]
-
+                  objFunVal <- sum(objFunVal, na.rm = TRUE)
+                }
                 print(paste("Done startYear: ", startYears))
-                nll <- sum(-log(probs$prob))
-              })
+                return(objFunVal)
+              }
+
+              )
 
   sum(unlist(outBig))
 
