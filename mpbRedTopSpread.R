@@ -214,8 +214,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 skipChecks = TRUE,
                                 saveStack = NULL))
   if (isTRUE(type == "fit")) {
-    DEout <- DEoptim(fn = objFun, lower = c(500, 500), upper = c(8000, 8000), reps = 1,
-                     quotedSpread = quotedSpread, fitType = fitType)
+    cl <- parallel::makeForkCluster(10)
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300), upper = c(8000, 8000), reps = 10,
+                     quotedSpread = quotedSpread,
+                     control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
     out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType)
     out <- eval(quotedSpread)
