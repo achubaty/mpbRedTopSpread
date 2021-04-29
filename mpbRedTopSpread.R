@@ -13,9 +13,10 @@ defineModule(sim, list(
   timeframe = as.POSIXlt(c(NA, NA)),
   timeunit = "year",
   citation = list(),
-  reqdPkgs = list("achubaty/amc@development", "data.table", "EnvStats",
+  reqdPkgs = list("achubaty/amc@development", "data.table", "DEoptim", "EnvStats",
                   "PredictiveEcology/LandR@development", "parallelly",  "quickPlot",
-                  "raster", "RColorBrewer", "reproducible"),
+                  "raster", "RColorBrewer", "reproducible",
+                  "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9008)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -76,12 +77,13 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
       out <- dispersal2(pineMap = sim$pineMap, studyArea = sim$studyArea,
                         massAttacksDT = sim$massAttacksDT,
                         massAttacksMap = sim$massAttacksMap,
-                        currentAttacks = sim$currentAttacks,
-                        params = P(sim),
-                        bgSettlingProp = P(sim)$bgSettlingProp,
-                        currentTime = time(sim)
-      )
-      # sim <- dispersal(sim)
+                             currentAttacks = sim$currentAttacks,
+                             params = P(sim),
+                             bgSettlingProp = P(sim)$bgSettlingProp,
+                             type = P(sim)$type,
+                             currentTime = time(sim)
+           )
+           # sim <- dispersal(sim)
       sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
     },
     "plot" = {
@@ -252,7 +254,7 @@ dispersal <- function(sim) {
 }
 
 dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
-                       currentAttacks, params, currentTime, bgSettlingProp) {
+                       currentAttacks, params, currentTime, bgSettlingProp, type) {
   ## check that MPB and pine rasters are the same resolution and ncells
   if (fromDisk(pineMap))
     pineMap[] <- pineMap[]
@@ -301,11 +303,30 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
-  objsToExport <- c("starts", "propPineMap", "currentAttacks", "advectionDir", "advectionMag", "minNumAgents")
+  # browser()
+  p <- params[["meanDist"]]
+  objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread"))
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
-  browser()
-  DEoptim(fn = objFun, lower = 500, upper = 4000)
+  quotedSpread <-
+    quote(SpaDES.tools::spread3(start = starts,
+                                rasQuality = propPineMap,
+                                rasAbundance = currentAttacks,
+                                advectionDir = advectionDir,
+                                advectionMag = advectionMag,
+                                meanDist = rnorm(1, p[[1]], p[[1]]/5),
+                                plot.it = FALSE,
+                                minNumAgents = minNumAgents,
+                                verbose = 0,
+                                skipChecks = TRUE,
+                                saveStack = NULL))
+  if (isTRUE(type == "fit")) {
+    DEout <- DEoptim(fn = objFun, lower = 500, upper = 4000, reps = 1,
+                     quotedSpread = quotedSpread)
+  } else {
+    out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p)
+    out <- eval(quotedSpread)
+  }
 
 
 
@@ -371,20 +392,23 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   browser()
 
   migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
-  out2 <- massAttacksDT[migrantsDT, on = c(ID = "pixels")]
+  massAttacksDTNew <- massAttacksDT[migrantsDT, on = c(ID = "pixels")]
 
   # ! ----- STOP EDITING ----- ! #
-  return(invisible())
+  return(invisible(massAttacksDTNew))
 }
 
 
 
-objFun <- function(params, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
-                   minNumAgents) {
+objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
+                   minNumAgents, massAttacksMap, currentTime, reps = 10,
+                   quotedSpread) {
   if (missing(starts))
     starts <- get("starts", envir = .GlobalEnv)
   if (missing(propPineMap))
     propPineMap <- get("propPineMap", envir = .GlobalEnv)
+  if (missing(massAttacksMap))
+    massAttacksMap <- get("massAttacksMap", envir = .GlobalEnv)
   if (missing(currentAttacks))
     currentAttacks <- get("currentAttacks", envir = .GlobalEnv)
   if (missing(advectionDir))
@@ -393,32 +417,39 @@ objFun <- function(params, starts, propPineMap, currentAttacks, advectionDir, ad
     advectionMag <- get("advectionMag", envir = .GlobalEnv)
   if (missing(minNumAgents))
     minNumAgents <- get("minNumAgents", envir = .GlobalEnv)
+  if (missing(currentTime))
+    currentTime <- get("currentTime", envir = .GlobalEnv)
+  if (missing(p))
+    p <- get("p", envir = .GlobalEnv)
 
-  outList <- lapply(1:10, function(X) {
-    out <- SpaDES.tools::spread3(start = starts,
-                                 rasQuality = propPineMap,
-                                 rasAbundance = currentAttacks,
-                                 advectionDir = advectionDir,
-                                 advectionMag = advectionMag,
-                                 meanDist = rnorm(1, params[[1]], params[[1]]/5),
-                                 plot.it = FALSE,
-                                 minNumAgents = minNumAgents,
-                                 verbose = 0,
-                                 skipChecks = TRUE,
-                                 saveStack = NULL) ## saveStack is the filename to save to
-  })
+  allYears <- names(massAttacksMap)
 
-  outBig <- rbindlist(outList, idcol = "rep")
+  combinations <- expand.grid(reps = seq(reps), years = seq_along(allYears[-1]))
+  years <- data.frame(
+    startYears = allYears[-length(allYears)],
+    endYears = allYears[-1])
+  combinations <- cbind(combinations, years[combinations[, "years"], ])
+  combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
 
-  atks <- outBig[, list(abundSettled  = sum(abundSettled)), by = c("rep", "pixels")]
-  nPix <- atks[abundSettled > 0, .N] ## total number of pixels
-  # atkAreaSim <- nPix * prod(res(pineMap)) / (100^2) ## area in ha
+  outBig <- purrr::pmap(.l = combinations,
+              massAttacksMap = massAttacksMap,
+              advDir = advectionDir,
+              advMag = advectionMag,
+              p = p,
+              minNumAgents = minNumAgents,
+              propPineMapInner = propPineMap,
+              .f = function(reps, startYears, endYears, p, minNumAgents, massAttacksMap, propPineMapInner, starts,
+                            advDir, advMag) {
+                currentAttacks <- massAttacksMap[[startYears]]
+                out <- eval(quotedSpread)
+                atks <- out[, list(abundSettled  = sum(abundSettled)), by = c("pixels")]
+                # nPix <- atks[abundSettled > 0, .N] ## total number of pixels
 
-  ## attacked area from data
-  atksRas <- massAttacksMap[[paste0("X", currentTime + 1)]]
-  atksKnown <- data.table(pixels = 1L:ncell(atksRas), ATKTREES = atksRas[])
-  atksKnown <- atksKnown[ATKTREES > 0]
-  likelihood <- sapply(1:NROW(atksKnown), function(rowNum) {
+                ## attacked area from data
+                atksRas <- massAttacksMap[[endYears]]
+                atksKnown <- data.table(pixels = 1L:ncell(atksRas), ATKTREES = atksRas[])
+                atksKnown <- atksKnown[ATKTREES > 0]
+                likelihood <- sapply(1:NROW(atksKnown), function(rowNum) {
     pix <- atksKnown[["pixels"]][rowNum]
     wh <- which(atks[["pixels"]]==pix)
     prob <- if (length(wh) >= 2) {
@@ -428,8 +459,11 @@ objFun <- function(params, starts, propPineMap, currentAttacks, advectionDir, ad
     } else {
       1e-14
     }
-    prob
-  })
-  nll <- sum(-log(likelihood))
+                  prob
+                })
+                nll <- sum(-log(likelihood))
+              })
+
+  sum(unlist(outBig))
 
 }
