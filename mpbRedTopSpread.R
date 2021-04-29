@@ -13,8 +13,8 @@ defineModule(sim, list(
   timeframe = as.POSIXlt(c(NA, NA)),
   timeunit = "year",
   citation = list(),
-  reqdPkgs = list("achubaty/amc@development", "data.table", "quickPlot",
-                  "PredictiveEcology/LandR@development",
+  reqdPkgs = list("achubaty/amc@development", "data.table", "EnvStats",
+                  "PredictiveEcology/LandR@development", "parallelly",  "quickPlot",
                   "raster", "RColorBrewer", "reproducible"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
@@ -74,9 +74,11 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
     },
     "dispersal" = {
       out <- dispersal2(pineMap = sim$pineMap, studyArea = sim$studyArea,
-                                     massAttacksDT = sim$massAttacksDT,
-                                     currentAttacks = sim$currentAttacks,
-                                     params = P(sim)
+                        massAttacksDT = sim$massAttacksDT,
+                        massAttacksMap = sim$massAttacksMap,
+                        currentAttacks = sim$currentAttacks,
+                        params = P(sim),
+                        currentTime = time(sim)
       )
       # sim <- dispersal(sim)
       sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
@@ -248,7 +250,8 @@ dispersal <- function(sim) {
   return(invisible(sim))
 }
 
-dispersal2 <- function(pineMap, studyArea, massAttacksDT, currentAttacks, params) {
+dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
+                       currentAttacks, params, currentTime) {
   ## check that MPB and pine rasters are the same resolution and ncells
   if (fromDisk(pineMap))
     pineMap[] <- pineMap[]
@@ -294,19 +297,51 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, currentAttacks, params
     currentAttacks <- currentAttacks
   }
 
-  #  st1 <- system.time({
-  out <- SpaDES.tools::spread3(start = starts,
-                               rasQuality = propPineMap,
-                               rasAbundance = currentAttacks,
-                               advectionDir = params$advectionDir,
-                               advectionMag = params$advectionMag,
-                               meanDist = params$meanDist,
-                               plot.it = !is.na(params$.plotInitialTime),
-                               minNumAgents = minNumAgents,
-                               verbose = 2,
-                               skipChecks = TRUE,
-                               saveStack = saveStack) ## saveStack is the filename to save to
-  #})
+  # Put objects in Global for objFun -- this is only when not using multi-machine cluster
+  advectionDir <- params$advectionDir
+  advectionMag <- params$advectionMag
+  objsToExport <- c("starts", "propPineMap", "currentAttacks", "advectionDir", "advectionMag", "minNumAgents")
+  list2env(mget(objsToExport), envir = .GlobalEnv)
+
+  browser()
+  DEoptim(fn = objFun, lower = 500, upper = 4000)
+
+
+
+
+  ## sum negative log likelihood for attacked pixels
+
+
+  ## TODO: something other than simple sum of squares?
+  #  metric <- (atkAreaData - atkAreaSim)^2 #+ (SNLL / 10^3)
+
+
+
+  if (isTRUE(!is.na(params$.plotInitialTime))) {
+
+    out2 <- out[, list(abundSettled = sum(abundSettled)), by = c("distance", "direction")]
+    maxDist <- max(out$distance)
+    rr <- raster::raster(extent(-maxDist, maxDist, -maxDist, maxDist), res = res(propPineMap))
+    out3 <- out2[abundSettled > 0]
+    xx = out3$distance * (sin(out3$direction))
+    yy = out3$distance * (-cos(out3$direction))
+    pixels <- cellFromXY(rr, cbind(xx, yy))
+    rr[pixels] <- out3$abundSettled
+    raster::plot(rr)
+
+
+    out2 <- out[, list(abundSettled = sum(abundSettled)), by = c("pixels")]
+    rr <- raster::raster(propPineMap)
+    rr[out2$pixels] <- out2$abundSettled
+    rr2 <- trim(rr)
+    rr3 <- raster(rr2)
+    rr3[rr2[] > 10] <- 2
+    rr4 <- trim(rr3)
+    rr5 <- crop(rr2, rr4)
+    Plot(rr5)
+
+
+  }
   if (EliotTesting) {
     fname <- file.path(outputPath(sim), paste0("spread", current(sim)$eventTime, ".tif"))
     tf <- raster::rasterTmpFile()
@@ -315,25 +350,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, currentAttacks, params
     writeRaster(r2, fname, overwrite = TRUE)
     unlink(saveStack, tf)
   }
-
-  if (FALSE) {
-    atks <- simOut$massAttacksDT
-    nPix <- atks[ATKTREES > 0, .N]
-    atkAreaSim <- nPix * prod(res(simOut$rasterToMatch)) / (100^2) ## area in ha
-
-    ## attacked area from data
-    atksRas <- simOut$massAttacksMap[[paste0("X", timesFit$end)]]
-    atks <- data.table(ID = 1L:ncell(atksRas), ATKTREES = atksRas[])
-    nPix <- atks[ATKTREES > 0, .N] ## total number of pixels
-    atkAreaData <- nPix * prod(res(simOut$rasterToMatch)) / (100^2) ## area in ha
-
-    ## sum negative log likelihood for attacked pixels
-
-
-    ## TODO: something other than simple sum of squares?
-    metric <- (atkAreaData - atkAreaSim)^2 #+ (SNLL / 10^3)
-  }
-
 
   # if (EliotTesting) {
   #   tmpStackObj <- stack(saveStack)
@@ -351,9 +367,68 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, currentAttacks, params
   #   }
   #   stop("End it here")
   # }
+  browser()
+
   migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
   out2 <- massAttacksDT[migrantsDT, on = c(ID = "pixels")]
 
   # ! ----- STOP EDITING ----- ! #
   return(invisible())
+}
+
+
+
+objFun <- function(params, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
+                   minNumAgents) {
+  if (missing(starts))
+    starts <- get("starts", envir = .GlobalEnv)
+  if (missing(propPineMap))
+    propPineMap <- get("propPineMap", envir = .GlobalEnv)
+  if (missing(currentAttacks))
+    currentAttacks <- get("currentAttacks", envir = .GlobalEnv)
+  if (missing(advectionDir))
+    advectionDir <- get("advectionDir", envir = .GlobalEnv)
+  if (missing(advectionMag))
+    advectionMag <- get("advectionMag", envir = .GlobalEnv)
+  if (missing(minNumAgents))
+    minNumAgents <- get("minNumAgents", envir = .GlobalEnv)
+
+  outList <- lapply(1:10, function(X) {
+    out <- SpaDES.tools::spread3(start = starts,
+                                 rasQuality = propPineMap,
+                                 rasAbundance = currentAttacks,
+                                 advectionDir = advectionDir,
+                                 advectionMag = advectionMag,
+                                 meanDist = rnorm(1, params[[1]], params[[1]]/5),
+                                 plot.it = FALSE,
+                                 minNumAgents = minNumAgents,
+                                 verbose = 0,
+                                 skipChecks = TRUE,
+                                 saveStack = NULL) ## saveStack is the filename to save to
+  })
+
+  outBig <- rbindlist(outList, idcol = "rep")
+
+  atks <- outBig[, list(abundSettled  = sum(abundSettled)), by = c("rep", "pixels")]
+  nPix <- atks[abundSettled > 0, .N] ## total number of pixels
+  # atkAreaSim <- nPix * prod(res(pineMap)) / (100^2) ## area in ha
+
+  ## attacked area from data
+  atksRas <- massAttacksMap[[paste0("X", currentTime + 1)]]
+  atksKnown <- data.table(pixels = 1L:ncell(atksRas), ATKTREES = atksRas[])
+  atksKnown <- atksKnown[ATKTREES > 0]
+  likelihood <- sapply(1:NROW(atksKnown), function(rowNum) {
+    pix <- atksKnown[["pixels"]][rowNum]
+    wh <- which(atks[["pixels"]]==pix)
+    prob <- if (length(wh) >= 2) {
+
+      #    i <<- i + 1
+      max(1e-14, demp(atksKnown[["ATKTREES"]][rowNum], atks[["abundSettled"]][wh]))
+    } else {
+      1e-14
+    }
+    prob
+  })
+  nll <- sum(-log(likelihood))
+
 }
