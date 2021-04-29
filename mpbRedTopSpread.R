@@ -78,6 +78,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                         massAttacksMap = sim$massAttacksMap,
                         currentAttacks = sim$currentAttacks,
                         params = P(sim),
+                        bgSettlingProp = P(sim)$bgSettlingProp,
                         currentTime = time(sim)
       )
       # sim <- dispersal(sim)
@@ -251,7 +252,7 @@ dispersal <- function(sim) {
 }
 
 dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
-                       currentAttacks, params, currentTime) {
+                       currentAttacks, params, currentTime, bgSettlingProp) {
   ## check that MPB and pine rasters are the same resolution and ncells
   if (fromDisk(pineMap))
     pineMap[] <- pineMap[]
@@ -262,10 +263,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together
   propPineMap <- if (nlayers(pineMap) > 1) sum(pineMap) else pineMap
-  # mv <- maxValue(propPineMap)
-  #
-  # if (mv > 1)
-  #   propPineMap[] <- propPineMap[] / 100 ## much faster than calc; ## TODO: allow different params per species
+  mv <- maxValue(propPineMap)
+
+  if (mv > 1)
+    propPineMap[] <- propPineMap[] / 100 ## much faster than calc; ## TODO: allow different params per species
 
   nas <- is.na(propPineMap[])
   propPineMap[nas] <- 0
@@ -278,7 +279,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   } else {
     EliotTesting <- FALSE
   }
-  #propPineMap[] <- pmin(1, propPineMap[] + P(sim)$bgSettlingProp) ## TODO: why divide by 100??
+  propPineMap[] <- pmin(1, propPineMap[] + bgSettlingProp) ## TODO: why divide by 100??
 
   if (EliotTesting) { # TODO -- delete EliotTesting when no longer desired
     a <- extent(studyArea)
