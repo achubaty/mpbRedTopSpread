@@ -64,19 +64,19 @@ defineModule(sim, list(
 
 doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
   switch(eventType,
-    "init" = {
-      # do stuff for this event
-      sim <- Init(sim)
+         "init" = {
+           # do stuff for this event
+           sim <- Init(sim)
 
-      # schedule future event(s)
-      sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
-      sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", .last() - 1)
-      sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save", .last())
-    },
-    "dispersal" = {
-      out <- dispersal2(pineMap = sim$pineMap, studyArea = sim$studyArea,
-                        massAttacksDT = sim$massAttacksDT,
-                        massAttacksMap = sim$massAttacksMap,
+           # schedule future event(s)
+           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
+           sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", .last() - 1)
+           sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save", .last())
+         },
+         "dispersal" = {
+           out <- dispersal2(pineMap = sim$pineMap, studyArea = sim$studyArea,
+                             massAttacksDT = sim$massAttacksDT,
+                             massAttacksMap = sim$massAttacksMap,
                              currentAttacks = sim$currentAttacks,
                              params = P(sim),
                              bgSettlingProp = P(sim)$bgSettlingProp,
@@ -84,14 +84,14 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                              currentTime = time(sim)
            )
            # sim <- dispersal(sim)
-      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
-    },
-    "plot" = {
-      sim <- plotFn(sim)
-      sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "plot", eventPriority = .last() - 1)
-    },
-    warning(paste("Undefined event type: '", events(sim)[1, "eventType", with = FALSE],
-                  "' in module '", events(sim)[1, "moduleName", with = FALSE], "'", sep = ""))
+           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
+         },
+         "plot" = {
+           sim <- plotFn(sim)
+           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "plot", eventPriority = .last() - 1)
+         },
+         warning(paste("Undefined event type: '", events(sim)[1, "eventType", with = FALSE],
+                       "' in module '", events(sim)[1, "moduleName", with = FALSE], "'", sep = ""))
   )
   return(invisible(sim))
 }
@@ -143,116 +143,6 @@ plotFn <- function(sim) {
 }
 
 ### spread
-dispersal <- function(sim) {
-  ## check that MPB and pine rasters are the same resolution and ncells
-  if (fromDisk(sim$pineMap))
-    sim$pineMap[] <- sim$pineMap[]
-
-  ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
-  MAXTREES <- 1125 * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
-
-  ## asymmetric spread (biased eastward)
-  # lodgepole pine and jack pine together
-  propPineMap <- if (nlayers(sim$pineMap) > 1) sum(sim$pineMap) else sim$pineMap
-  # mv <- maxValue(propPineMap)
-  #
-  # if (mv > 1)
-  #   propPineMap[] <- propPineMap[] / 100 ## much faster than calc; ## TODO: allow different params per species
-
-  nas <- is.na(propPineMap[])
-  propPineMap[nas] <- 0
-  if (exists("EliotTesting")) {
-    EliotTesting <- TRUE
-    sim@params$mpbRedTopSpread$bgSettlingProp <- 0.7
-    sim@params$mpbRedTopSpread$advectionMag <- 20000
-    minNumAgents <- 200
-    sim@params$mpbRedTopSpread$.plotInitialTime <- NA
-  } else {
-    EliotTesting <- FALSE
-  }
-  #propPineMap[] <- pmin(1, propPineMap[] + P(sim)$bgSettlingProp) ## TODO: why divide by 100??
-
-  if (EliotTesting) { # TODO -- delete EliotTesting when no longer desired
-    a <- extent(sim$studyArea)
-    starts <- sim$massAttacksDT[ATKTREES > 0]$ID
-    d <- raster(sim$currentAttacks)
-    d[starts] <- 1
-    d <- crop(d, a)
-    starts <- which(d[] > 0)
-    currentAttacks <- crop(sim$currentAttacks, a) * 300
-    propPineMap <- crop(propPineMap, a)
-    saveStack <- raster::rasterTmpFile()
-  } else {
-    minNumAgents <- 50
-    starts <- sim$massAttacksDT[["ID"]][sim$massAttacksDT$ATKTREES > 0]
-    saveStack <- NULL
-    currentAttacks <- sim$currentAttacks
-  }
-
-  #  st1 <- system.time({
-  out <- SpaDES.tools::spread3(start = starts,
-                               rasQuality = propPineMap,
-                               rasAbundance = currentAttacks,
-                               advectionDir = P(sim)$advectionDir,
-                               advectionMag = P(sim)$advectionMag,
-                               meanDist = P(sim)$meanDist,
-                               plot.it = !is.na(P(sim)$.plotInitialTime),
-                               minNumAgents = minNumAgents,
-                               verbose = 2,
-                               skipChecks = TRUE,
-                               saveStack = saveStack) ## saveStack is the filename to save to
-  #})
-  if (EliotTesting) {
-    fname <- file.path(outputPath(sim), paste0("spread", current(sim)$eventTime, ".tif"))
-    tf <- raster::rasterTmpFile()
-    r <- stack(saveStack)
-    r2 <- calc(r, sum, filename = tf, overwrite = TRUE)
-    writeRaster(r2, fname, overwrite = TRUE)
-    unlink(saveStack, tf)
-  }
-
-  if (FALSE) {
-    atks <- simOut$massAttacksDT
-    nPix <- atks[ATKTREES > 0, .N]
-    atkAreaSim <- nPix * prod(res(simOut$rasterToMatch)) / (100^2) ## area in ha
-
-    ## attacked area from data
-    atksRas <- simOut$massAttacksMap[[paste0("X", timesFit$end)]]
-    atks <- data.table(ID = 1L:ncell(atksRas), ATKTREES = atksRas[])
-    nPix <- atks[ATKTREES > 0, .N] ## total number of pixels
-    atkAreaData <- nPix * prod(res(simOut$rasterToMatch)) / (100^2) ## area in ha
-
-    ## sum negative log likelihood for attacked pixels
-
-
-    ## TODO: something other than simple sum of squares?
-    metric <- (atkAreaData - atkAreaSim)^2 #+ (SNLL / 10^3)
-  }
-
-
-  # if (EliotTesting) {
-  #   tmpStackObj <- stack(saveStack)
-  #   ex <- extent(tmpStackObj)
-  #   ex@ymax <- ex@ymax - 4000
-  #   ex@ymin <- 7389000
-  #   ex@xmax <- -901000
-  #   out2 <- crop(tmpStackObj, ex) * 10
-  #   if (require(animation)) {
-  #     gifName <- "C:\\Eliot\\Google Drive\\McIntire-lab\\figures\\MPB animation 700px small area 3.gif"
-  #     #gifName <- file.path(tempdir(), "animation.gif")
-  #     saveGIF(interval = 0.1, ani.height = 700, ani.width = 700, movie.name = gifName, expr = {
-  #       for (i in seq(numLayers(out2))) plot(out2[[i]])
-  #     })
-  #   }
-  #   stop("End it here")
-  # }
-  migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
-  out2 <- sim$massAttacksDT[migrantsDT, on = c(ID = "pixels")]
-
-  # ! ----- STOP EDITING ----- ! #
-  return(invisible(sim))
-}
-
 dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                        currentAttacks, params, currentTime, bgSettlingProp, type) {
   ## check that MPB and pine rasters are the same resolution and ncells
@@ -450,15 +340,15 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
                 atksKnown <- data.table(pixels = 1L:ncell(atksRas), ATKTREES = atksRas[])
                 atksKnown <- atksKnown[ATKTREES > 0]
                 likelihood <- sapply(1:NROW(atksKnown), function(rowNum) {
-    pix <- atksKnown[["pixels"]][rowNum]
-    wh <- which(atks[["pixels"]]==pix)
-    prob <- if (length(wh) >= 2) {
+                  pix <- atksKnown[["pixels"]][rowNum]
+                  wh <- which(atks[["pixels"]]==pix)
+                  prob <- if (length(wh) >= 2) {
 
-      #    i <<- i + 1
-      max(1e-14, demp(atksKnown[["ATKTREES"]][rowNum], atks[["abundSettled"]][wh]))
-    } else {
-      1e-14
-    }
+                    #    i <<- i + 1
+                    max(1e-14, demp(atksKnown[["ATKTREES"]][rowNum], atks[["abundSettled"]][wh]))
+                  } else {
+                    1e-14
+                  }
                   prob
                 })
                 nll <- sum(-log(likelihood))
