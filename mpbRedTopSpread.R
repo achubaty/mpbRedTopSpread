@@ -16,7 +16,7 @@ defineModule(sim, list(
   reqdPkgs = list("achubaty/amc@development", "data.table", "DEoptim", "EnvStats",
                   "PredictiveEcology/LandR@development", "parallelly",  "quickPlot",
                   "raster", "RColorBrewer", "reproducible",
-                  "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9008)"),
+                  "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9009)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -25,6 +25,8 @@ defineModule(sim, list(
     defineParameter("bgSettlingProp", "numeric", 0.1, 0, 1,
                     "The proportion of beetles that settle from those that could potentially settle, even if no pine"),
     defineParameter("meanDist", "numeric", 1000, NA, NA,
+                    "Expected dispersal distance (m); ~63% go less than this distance"),
+    defineParameter("type", "character", "fit", NA, NA,
                     "Expected dispersal distance (m); ~63% go less than this distance"),
     defineParameter(".plotInitialTime", "numeric", NA, NA, NA,
                     "This describes the simulation time at which the first plot event should occur"),
