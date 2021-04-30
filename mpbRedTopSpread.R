@@ -16,7 +16,7 @@ defineModule(sim, list(
   reqdPkgs = list("achubaty/amc@development", "data.table", "DEoptim", "EnvStats",
                   "PredictiveEcology/LandR@development", "parallelly",  "quickPlot",
                   "raster", "RColorBrewer", "reproducible",
-                  "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9009)"),
+                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9010)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -192,7 +192,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     currentAttacks <- currentAttacks
   }
 
-  mam <- unstack(massAttacksMap)
+  mam <- raster::unstack(massAttacksMap)
   names(mam) <- names(massAttacksMap)
   massAttacksDTAllYears <- lapply(mam, function(x) {
     pixels = which(x[] > 0)
@@ -203,7 +203,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
   omitPastPines <- TRUE
+  sdDist <- 1.2
+  dispersalKernel <- "weibull"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
+  p <- c(p, "sdDist")
   fitType <- "logSAD"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
   list2env(mget(objsToExport), envir = .GlobalEnv)
@@ -215,15 +218,18 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 advectionDir = p[3],
                                 advectionMag = p[2],
                                 meanDist = p[1], #rnorm(1, p[[1]], p[[1]]/2),
+                                sdDist = p[4],
+                                dispersalKernel = dispersalKernel,
                                 plot.it = FALSE,
                                 minNumAgents = minNumAgents,
                                 verbose = 0,
                                 skipChecks = TRUE,
                                 saveStack = NULL))
+  browser()
   if (isTRUE(type == "fit")) {
-    cl <- parallel::makeForkCluster(15)
+    cl <- parallel::makeForkCluster(14)
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0), upper = c(12000, 12000, 180), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(20000, 20000, 180, 1.6), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
@@ -306,7 +312,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
 objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
-                   quotedSpread, fitType = "ss1", omitPastPines) {
+                   quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
@@ -331,6 +337,12 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
     fitType <- get("fitType", envir = .GlobalEnv)
   if (missing(omitPastPines))
     omitPastPines <- get("omitPastPines", envir = .GlobalEnv)
+  if (missing(sdDist))
+    sdDist <- get("sdDist", envir = .GlobalEnv)
+  if (missing(dispersalKernel))
+    dispersalKernel <- get("dispersalKernel", envir = .GlobalEnv)
+
+
 
   if (fitType == "likelihood") {
     if (reps < 10) {
@@ -387,6 +399,7 @@ objFunInner <- function(reps, startYears, endYears, p, minNumAgents, massAttacks
     massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
   }
   env <- environment()
+  browser()
   out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
   out <- rbindlist(out, idcol = "rep")
 
