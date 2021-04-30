@@ -17,7 +17,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "reproducible",
-                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9010)"),
+                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9011)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -201,6 +201,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   })
 
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
+  startsOuter <- starts
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
   omitPastPines <- TRUE
@@ -301,7 +302,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   #   }
   #   stop("End it here")
   # }
-  browser()
 
   migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
   massAttacksDTNew <- massAttacksDT[migrantsDT, on = c(ID = "pixels")]
@@ -312,15 +312,15 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
 
 
-objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
+objFun <- function(p, startsOuter, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
                    quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
   #   then read them in locally from disk --> faster when bandwidth is slow
-  if (missing(starts))
-    starts <- get("starts", envir = .GlobalEnv)
+  if (missing(startsOuter))
+    startsOuter <- get("startsOuter", envir = .GlobalEnv)
   if (missing(propPineMap))
     propPineMap <- get("propPineMap", envir = .GlobalEnv)
   if (missing(massAttacksMap))
@@ -344,8 +344,6 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
   if (missing(dispersalKernel))
     dispersalKernel <- get("dispersalKernel", envir = .GlobalEnv)
 
-
-
   if (fitType == "likelihood") {
     if (reps < 10) {
       message("reps must be at least 10 if using likelihood; setting to 10")
@@ -363,6 +361,7 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
   # combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
 
   outBig <- purrr::pmap(.l = years,
+                        starts = startsOuter,
               massAttacksMap = massAttacksMap,
               advDir = advectionDir,
               advMag = advectionMag,
@@ -379,7 +378,8 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
 
 }
 
-objFunInner <- function(reps, startYears, endYears, p, minNumAgents, massAttacksMap, propPineMapInner, starts,
+objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
+                        massAttacksMap, propPineMapInner,
                         advDir, advMag, quotedSpread, fitType, omitPastPines) {
   currentAttacks <- massAttacksMap[[startYears]]
 
