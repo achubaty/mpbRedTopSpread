@@ -207,6 +207,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   omitPastPines <- TRUE
   sdDist <- 1.2
   dispersalKernel <- "weibull"
+  dispersalKernel <- "exponential"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p <- c(p, sdDist = sdDist)
   fitType <- "logSAD"
@@ -232,11 +233,12 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     cl <- makeOptimalCluster(type = "FORK", MBper = 3000, length(p) * 10,
                              assumeHyperThreads = TRUE)
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(20000, 20000, 180, 1.6), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(30000, 30000, 180, 1.8), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
     out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType)
+    propPineMapInner <- propPineMap
     out <- eval(quotedSpread)
   }
 
