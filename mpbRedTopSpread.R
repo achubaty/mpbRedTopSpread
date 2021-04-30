@@ -196,7 +196,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
   # browser()
-  p <- do.call(c, params[c("meanDist", "advectionMag")])
+  p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   fitType <- "logSAD"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
   list2env(mget(objsToExport), envir = .GlobalEnv)
@@ -205,7 +205,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     quote(SpaDES.tools::spread3(start = starts,
                                 rasQuality = propPineMap,
                                 rasAbundance = currentAttacks,
-                                advectionDir = advectionDir,
+                                advectionDir = p[3],
                                 advectionMag = p[2],
                                 meanDist = p[1], #rnorm(1, p[[1]], p[[1]]/2),
                                 plot.it = FALSE,
@@ -213,9 +213,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 verbose = 0,
                                 skipChecks = TRUE,
                                 saveStack = NULL))
+  browser()
   if (isTRUE(type == "fit")) {
     cl <- parallel::makeForkCluster(10)
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300), upper = c(8000, 8000), reps = 10,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0), upper = c(8000, 8000, 180), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
