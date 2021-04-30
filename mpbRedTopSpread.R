@@ -192,10 +192,17 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     currentAttacks <- currentAttacks
   }
 
+  mam <- unstack(massAttacksMap)
+  names(mam) <- names(massAttacksMap)
+  massAttacksDTAllYears <- lapply(mam, function(x) {
+    pixels = which(x[] > 0)
+    setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
+  })
+
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
-  # browser()
+  omitPastPines <- TRUE
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   fitType <- "logSAD"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
@@ -203,7 +210,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
   quotedSpread <-
     quote(SpaDES.tools::spread3(start = starts,
-                                rasQuality = propPineMap,
+                                rasQuality = propPineMapInner,
                                 rasAbundance = currentAttacks,
                                 advectionDir = p[3],
                                 advectionMag = p[2],
@@ -213,10 +220,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 verbose = 0,
                                 skipChecks = TRUE,
                                 saveStack = NULL))
-  browser()
   if (isTRUE(type == "fit")) {
-    cl <- parallel::makeForkCluster(10)
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0), upper = c(8000, 8000, 180), reps = 1,
+    cl <- parallel::makeForkCluster(15)
+    on.exit(parallel::stopCluster(cl))
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0), upper = c(12000, 12000, 180), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
@@ -299,11 +306,11 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
 objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
-                   quotedSpread, fitType = "ss1") {
-  # if (reps < 10) {
-  #   message("reps must be at least 10; setting to 10")
-  #   reps <- 10
-  # }
+                   quotedSpread, fitType = "ss1", omitPastPines) {
+
+  # DEoptim, when used across a network, inefficiently moves large objects every time
+  #   it calls makes an objFun call. Better to move the objects to each node's disk,
+  #   then read them in locally from disk --> faster when bandwidth is slow
   if (missing(starts))
     starts <- get("starts", envir = .GlobalEnv)
   if (missing(propPineMap))
@@ -322,6 +329,15 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
     currentTime <- get("currentTime", envir = .GlobalEnv)
   if (missing(fitType))
     fitType <- get("fitType", envir = .GlobalEnv)
+  if (missing(omitPastPines))
+    omitPastPines <- get("omitPastPines", envir = .GlobalEnv)
+
+  if (fitType == "likelihood") {
+    if (reps < 10) {
+      message("reps must be at least 10 if using likelihood; setting to 10")
+      reps <- 10
+    }
+  }
 
   allYears <- names(massAttacksMap)
 
@@ -339,57 +355,93 @@ objFun <- function(p, starts, propPineMap, currentAttacks, advectionDir, advecti
               p = p, reps = reps,
               minNumAgents = minNumAgents,
               propPineMapInner = propPineMap,
-              .f = function(reps, startYears, endYears, p, minNumAgents, massAttacksMap, propPineMapInner, starts,
-                            advDir, advMag) {
-                currentAttacks <- massAttacksMap[[startYears]]
-                env <- environment()
-                out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
-                out <- rbindlist(out, idcol = "rep")
-
-                atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) * 1125 * 6.25), by = c("rep", "pixels")]
-                # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
-
-                ## attacked area from data
-                atksRasNextYr <- massAttacksMap[[endYears]]
-                wh <- which(atksRasNextYr[] > 0)
-                atksKnownNextYr <- setDT(list(pixels = wh, ATKTREES = atksRasNextYr[][wh]))
-                # atksKnownNextYr <- atksKnownNextYr[ATKTREES > 0]
-                # i <- 1
-                oo <- atksNextYearSims[atksKnownNextYr, on = "pixels", nomatch = NA]
-                oo[, ATKTREES := ATKTREES[1], by = "pixels"]
-
-                #i <- 0
-                if (fitType == "likelihood") {
-                  probs <- oo[, list(prob = {
-                    prob <- if (.N > 2) {
-                      i <<- i + 1
-                      # print(i)
-
-                      max(1e-14, demp(ATKTREES[1], abundSettled))
-
-                    } else {
-                      1e-14
-                    }
-                  }), by = "pixels"]
-                  objFunVal <- sum(-log(probs$prob))
-                } else {
-                  oo[is.na(abundSettled),  abundSettled := 0]
-                  if (fitType == "ss1") {
-                    objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
-                  } else if (fitType == "logSAD") {
-                    objFunVal <- log(abs(oo$ATKTREES - oo$abundSettled))
-                    isInf <- is.infinite(objFunVal)
-                    if (any(isInf))
-                      objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
-                  }
-                  objFunVal <- sum(objFunVal, na.rm = TRUE)
-                }
-                print(paste("Done startYear: ", startYears))
-                return(objFunVal)
-              }
-
+              quotedSpread = quotedSpread,
+              fitType = fitType,
+              omitPastPines = omitPastPines,
+              .f = objFunInner
               )
 
   sum(unlist(outBig))
 
+}
+
+objFunInner <- function(reps, startYears, endYears, p, minNumAgents, massAttacksMap, propPineMapInner, starts,
+                        advDir, advMag, quotedSpread, fitType, omitPastPines) {
+  currentAttacks <- massAttacksMap[[startYears]]
+
+  if (omitPastPines) {
+
+    namesMAM <- names(massAttacksMap)
+
+    namesToStartYears <- namesMAM[seq(which(namesMAM %in% startYears))]
+    # unlist them
+    mam <- if (length(namesToStartYears) == 1)
+      list(massAttacksMap[[namesToStartYears]])
+    else
+      raster::unstack(massAttacksMap[[namesToStartYears]])
+    names(mam) <- namesToStartYears
+    massAttacksDTYearsToPres <- lapply(mam, function(x) {
+      pixels = which(x[] > 0)
+      setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
+    })
+    massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
+  }
+  env <- environment()
+  out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
+  out <- rbindlist(out, idcol = "rep")
+
+  atksRasNextYr <- massAttacksMap[[endYears]]
+  wh <- which(atksRasNextYr[] > 0)
+  atksKnownNextYr <- setDT(list(pixels = wh, ATKTREES = atksRasNextYr[][wh]))
+
+  # Remove pixels that had already been attacked in the past -- emulating MPB Suppression efforts
+  if (omitPastPines)
+    atksKnownNextYr <- atksKnownNextYr[!massAttacksDTYearsToPres, on = "pixels"]
+
+  atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) * 1125 * 6.25), by = c("rep", "pixels")]
+  # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
+
+  ## attacked area from data
+  # atksKnownNextYr <- atksKnownNextYr[ATKTREES > 0]
+  # i <- 1
+  oo <- atksKnownNextYr[atksNextYearSims, on = "pixels", nomatch = NA]
+  set(oo, which(is.na(oo$ATKTREES)), "ATKTREES", 0L)
+  # oo <- atksNextYearSims[atksKnownNextYr, on = "pixels", nomatch = NA]
+  if (reps > 1)
+    oo[, ATKTREES := ATKTREES[1], by = "pixels"]
+
+  #i <- 0
+  if (fitType == "likelihood") {
+    probs <- oo[, list(prob = {
+      prob <- if (.N > 2) {
+        i <<- i + 1
+        # print(i)
+
+        max(1e-14, demp(ATKTREES[1], abundSettled))
+
+      } else {
+        1e-14
+      }
+    }), by = "pixels"]
+    objFunVal <- sum(-log(probs$prob))
+  } else {
+    oo[is.na(abundSettled),  abundSettled := 0]
+    if (fitType == "ss1") {
+      objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
+    } else if (fitType == "logSAD") {
+      objFunVal <- log(abs(oo$ATKTREES - oo$abundSettled))
+      isInf <- is.infinite(objFunVal)
+      if (any(isInf))
+        objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+    } else if (fitType == "SAD") {
+      objFunVal <- abs(oo$ATKTREES - oo$abundSettled)
+      isInf <- is.infinite(objFunVal)
+      if (any(isInf))
+        objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+    }
+
+    objFunVal <- sum(objFunVal, na.rm = TRUE)
+  }
+  print(paste("Done startYear: ", startYears))
+  return(round(objFunVal, 3))
 }
