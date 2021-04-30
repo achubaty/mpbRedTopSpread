@@ -228,7 +228,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 saveStack = NULL))
   browser()
   if (isTRUE(type == "fit")) {
-    cl <- pemisc::makeOptimalCluster(type = "FORK", MBper = 3000, length(p) * 10)
+    cl <- pemisc::makeOptimalCluster(type = "FORK", MBper = 3000, length(p) * 10,
+                                     assumeHyperthread = TRUE)
     on.exit(parallel::stopCluster(cl))
     DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(20000, 20000, 180, 1.6), reps = 1,
                      quotedSpread = quotedSpread,
