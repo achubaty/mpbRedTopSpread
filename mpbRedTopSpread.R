@@ -14,8 +14,9 @@ defineModule(sim, list(
   timeunit = "year",
   citation = list(),
   reqdPkgs = list("achubaty/amc@development", "data.table", "DEoptim", "EnvStats",
-                  "PredictiveEcology/LandR@development", "parallelly",  "quickPlot",
-                  "raster", "RColorBrewer", "reproducible",
+                  "PredictiveEcology/LandR@development", "parallelly",
+                  "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
+                  "quickPlot", "raster", "RColorBrewer", "reproducible",
                   "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9010)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
@@ -206,7 +207,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   sdDist <- 1.2
   dispersalKernel <- "weibull"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
-  p <- c(p, "sdDist")
+  p <- c(p, sdDist = sdDist)
   fitType <- "logSAD"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
   list2env(mget(objsToExport), envir = .GlobalEnv)
@@ -227,7 +228,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 saveStack = NULL))
   browser()
   if (isTRUE(type == "fit")) {
-    cl <- parallel::makeForkCluster(14)
+    cl <- pemisc::makeOptimalCluster(type = "FORK", MBper = 3000, length(p) * 10)
     on.exit(parallel::stopCluster(cl))
     DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(20000, 20000, 180, 1.6), reps = 1,
                      quotedSpread = quotedSpread,
@@ -399,7 +400,6 @@ objFunInner <- function(reps, startYears, endYears, p, minNumAgents, massAttacks
     massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
   }
   env <- environment()
-  browser()
   out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
   out <- rbindlist(out, idcol = "rep")
 
