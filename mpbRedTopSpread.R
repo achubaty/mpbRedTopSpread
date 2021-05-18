@@ -17,7 +17,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "reproducible",
-                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9011)"),
+                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9012)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -193,12 +193,12 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     currentAttacks <- currentAttacks
   }
 
-  mam <- raster::unstack(massAttacksMap)
-  names(mam) <- names(massAttacksMap)
-  massAttacksDTAllYears <- lapply(mam, function(x) {
-    pixels = which(x[] > 0)
-    setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
-  })
+  # mam <- raster::unstack(massAttacksMap)
+  # names(mam) <- names(massAttacksMap)
+  # massAttacksDTAllYears <- lapply(mam, function(x) {
+  #   pixels = which(x[] > 0)
+  #   setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
+  # })
 
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
   startsOuter <- starts
@@ -238,11 +238,39 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
     out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
-                  massAttacksMap = massAttacksMap[[1:2]])
+                  massAttacksMap = massAttacksMap)
   }
 
-
+  # Visualize with maps
   browser()
+  # Kernel
+  meanDist <- p[1] <- 24303; sdDist <- p[4] <- 1.8; advectionMagTmp <- p[2] <- 38623;
+  advectionDir <- p[3] <- 4.72
+  mn <- (meanDist + advectionMagTmp)
+  sd <- mn/sdDist # 0.8 to 2.0 range
+  shape <- (sd/mn)^(-1.086)
+  scale <- mn/exp(lgamma(1+1/shape))
+  aa <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)
+
+  mn <- max(10, (meanDist - advectionMagTmp))
+  sd <- mn/sdDist # 0.8 to 2.0 range
+  shape <- (sd/mn)^(-1.086)
+  scale <- mn/exp(lgamma(1+1/shape))
+  bb <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)
+  clearPlot()
+  Plot(aa$x, aa$y, addTo = "Kernel_with_wind", type = "l")
+  Plot(bb$x, bb$y, addTo = "Kernel_without_wind", type = "l")
+
+
+  r <- raster(extent(-20000, 20000, -20000, 20000), res = 100)
+  r[] <- 1
+  abund <- raster(r)
+  abund[SpaDES.tools::middlePixel(abund)] <- 10000
+  out <- spread3(SpaDES.tools::middlePixel(r), rasQuality = r, rasAbundance = abund,
+          advectionDir = 5, advectionMag = advectionMagTmp, meanDist = meanDist,
+          sdDist = sdDist, dispersalKernel = "weibull", plot.it = F)
+  abund[out$pixels] <- out$abundSettled
+  clearPlot(); Plot(abund)
 
 
   ## sum negative log likelihood for attacked pixels
