@@ -233,7 +233,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     cl <- makeOptimalCluster(type = "FORK", MBper = 3000, length(p) * 10,
                              assumeHyperThreads = TRUE)
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(30000, 30000, 180, 1.8), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(40000, 40000, 180, 1.8), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
