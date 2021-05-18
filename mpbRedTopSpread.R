@@ -244,8 +244,75 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   # Visualize with maps
   browser()
   # Kernel
-  meanDist <- p[1] <- 24303; sdDist <- p[4] <- 1.8; advectionMagTmp <- p[2] <- 38623;
-  advectionDir <- p[3] <- 4.72
+  meanDist <- p[1] <- 14114;
+  sdDist <- p[4] <- 1.51;
+  advectionMagTmp <- p[2] <- 32394;
+  advectionDir <- p[3] <- -52.53
+  r <- raster(extent(-20000, 20000, -20000, 20000), res = 100)
+  r[] <- 1
+  abund <- raster(r)
+  mid <- SpaDES.tools::middlePixel(abund)
+  abund[mid] <- 10000
+  out <- spread3(mid, rasQuality = r, rasAbundance = abund,
+          advectionDir = advectionDir,
+          advectionMag = advectionMagTmp,
+          meanDist = meanDist,
+          sdDist = sdDist, dispersalKernel = "weibull", plot.it = F)
+  abund[out$pixels] <- out$abundSettled
+  abund[mid] <- max(abund[], na.rm = TRUE) * 1.5
+  clearPlot(); Plot(abund)
+
+  nams <- names(massAttacksMap)
+  # diffs <- list()
+  diffs <- lapply(seq(nams)[-length(nams)], function(i) {
+    a <- massAttacksMap[[nams[i]]]
+    b <- massAttacksMap[[nams[i+1]]]
+    froms <- xyFromCell(a, which(a[] > 0))
+    tos <- xyFromCell(b, which(b[] > 0))
+    if (length(froms) && length(tos)) {
+      dirs <- distanceFromEachPoint(froms, tos, a, angles = TRUE)
+
+      # From https://www.themathdoctors.org/averaging-angles/
+      avgDir <- try(deg(atan(sum(sin(dirs[, "angles"]))/sum(cos(dirs[, "angles"])))))
+      avgDist <- mean(dirs[, "dists"])
+      if (is(avgDir, "try-error")) browser()
+    } else {
+      avgDir <- NA
+      avgDist <- NA
+    }
+
+    a <- trim(a)
+    a[] <- a[] > 0
+    b <- trim(b)
+    b[] <- (b[] > 0) + 1
+    d <- mosaic(a, b, fun = sum)
+    d[d[]==0] <- NA
+    levels(d) <- data.frame(ID = 0:3, c("none", "prevYr", "nextYr", "both"))
+    setColors(d) <- c("transparent", "red", "blue", "purple")
+    d <- setMinMax(d)
+    writeRaster(d, filename = paste0("MPB_Yrs_", nams[i], "-", nams[i+1], ".tif"), overwrite = TRUE)
+    # png(filename = paste0("MPB_Yrs_", nams[i], "-", nams[i+1], ".png"),
+    #     width = 2000)
+    # Plot(d)
+    # dev.off()
+    # diffs[[i]] <- d
+    list(ras = d, avgDir = avgDir, avgDist = avgDist)
+  })
+
+  diffs2 <- purrr::transpose(diffs)
+  diffs <- diffs2$ras
+  dirAvgs <- unlist(diffs2$avgDir)
+  dirAvgs <- as.data.table(dirAvgs, keep.rownames = "YearPair")
+  names(dirAvgs) <- paste0(nams[-length(nams)], "-to-", nams[-1])
+  names(diffs) <- nams[-length(nams)]
+  dev()
+  clearPlot()
+  Plot(diffs, visualSqueeze = 1)
+
+  # Average direction
+  froms <-
+
+
   mn <- (meanDist + advectionMagTmp)
   sd <- mn/sdDist # 0.8 to 2.0 range
   shape <- (sd/mn)^(-1.086)
@@ -261,16 +328,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   Plot(aa$x, aa$y, addTo = "Kernel_with_wind", type = "l")
   Plot(bb$x, bb$y, addTo = "Kernel_without_wind", type = "l")
 
-
-  r <- raster(extent(-20000, 20000, -20000, 20000), res = 100)
-  r[] <- 1
-  abund <- raster(r)
-  abund[SpaDES.tools::middlePixel(abund)] <- 10000
-  out <- spread3(SpaDES.tools::middlePixel(r), rasQuality = r, rasAbundance = abund,
-          advectionDir = 5, advectionMag = advectionMagTmp, meanDist = meanDist,
-          sdDist = sdDist, dispersalKernel = "weibull", plot.it = F)
-  abund[out$pixels] <- out$abundSettled
-  clearPlot(); Plot(abund)
 
 
   ## sum negative log likelihood for attacked pixels
