@@ -237,9 +237,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
-    out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType)
-    propPineMapInner <- propPineMap
-    out <- eval(quotedSpread)
+    out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
+                  massAttacksMap = massAttacksMap[[1:2]])
   }
 
 
@@ -362,6 +361,7 @@ objFun <- function(p, startsOuter, propPineMap, currentAttacks, advectionDir, ad
   # combinations <- cbind(combinations, years[combinations[, "years"], ])
   # combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
 
+  maxObjFunValIndiv <- -Inf
   outBig <- purrr::pmap(.l = years,
                         starts = startsOuter,
               massAttacksMap = massAttacksMap,
@@ -376,12 +376,12 @@ objFun <- function(p, startsOuter, propPineMap, currentAttacks, advectionDir, ad
               .f = objFunInner
               )
 
-  sum(unlist(outBig))
+  sum(unlist(outBig), na.rm = TRUE)
 
 }
 
 objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
-                        massAttacksMap, propPineMapInner,
+                        massAttacksMap, propPineMapInner, objFunValOnFail = 1e3,
                         advDir, advMag, quotedSpread, fitType, omitPastPines) {
   currentAttacks <- massAttacksMap[[startYears]]
 
@@ -445,19 +445,48 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     if (fitType == "ss1") {
       objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
     } else if (fitType == "logSAD") {
-      objFunVal <- log(abs(oo$ATKTREES - oo$abundSettled))
+      #if (startYears == "X2010") browser()
+      # To balance the zeros and non-zeros, must sub-sample the zeros so there are equal
+      #   number as the non-zeros
+      whNonZero <- oo$ATKTREES > 0
+      numNonZero <- tabulate(as.integer(whNonZero))
+      whZero <- which(!whNonZero)
+      whNonZero <- which(whNonZero)
+      samZero <- sample(whZero, size = round(numNonZero/4, 0))
+      samNonZero <- sample(whNonZero, size = numNonZero)
+      sam <- c(samZero, samNonZero)
+      objFunVal <- abs(oo$ATKTREES[sam] - oo$abundSettled[sam])
+      # browser()
       isInf <- is.infinite(objFunVal)
-      if (any(isInf))
-        objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+      if (any(isInf)) {
+        if (all(isInf)) {
+          negInf <- objFunVal < 0
+          if (any(negInf))
+            objFunVal[isInf] <- 0
+          if (any(!negInf))
+            objFunVal[isInf] <- objFunValOnFail
+        } else {
+          objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+        }
+      }
     } else if (fitType == "SAD") {
       objFunVal <- abs(oo$ATKTREES - oo$abundSettled)
       isInf <- is.infinite(objFunVal)
-      if (any(isInf))
-        objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+      if (any(isInf)) {
+        if (all(isInf)) {
+          negInf <- objFunVal < 0
+          if (any(negInf))
+            objFunVal[isInf] <- 0
+          if (any(!negInf))
+            objFunVal[isInf] <- objFunValOnFail
+        } else {
+          objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+        }
+      }
     }
 
     objFunVal <- sum(objFunVal, na.rm = TRUE)
   }
-  print(paste("Done startYear: ", startYears))
+  print(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
   return(round(objFunVal, 3))
 }
