@@ -211,6 +211,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   dispersalKernel <- "exponential"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p <- c(p, sdDist = sdDist)
+  p["meanDistSD"] <- 1.3
+  p["meanDirSD"] <- 20
+  p["advectionDir"] <- 0
+  p["advectionDirSD"] <- 20
   fitType <- "logSAD"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
   list2env(mget(objsToExport), envir = .GlobalEnv)
@@ -219,9 +223,9 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     quote(SpaDES.tools::spread3(start = starts,
                                 rasQuality = propPineMapInner,
                                 rasAbundance = currentAttacks,
-                                advectionDir = p[3],
+                                advectionDir = rnorm(1, p[3], p[6]),
                                 advectionMag = p[2],
-                                meanDist = p[1], #rnorm(1, p[[1]], p[[1]]/2),
+                                meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
                                 sdDist = p[4],
                                 dispersalKernel = dispersalKernel,
                                 plot.it = FALSE,
@@ -234,7 +238,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     cl <- makeOptimalCluster(type = "FORK", MBper = 3000, length(p) * 10,
                              assumeHyperThreads = TRUE)
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, 0, 0.9), upper = c(40000, 40000, 180, 1.8), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, -90, 0.9, 1.1, 5), upper = c(40000, 40000, 180, 1.8, 1.5, 30), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
