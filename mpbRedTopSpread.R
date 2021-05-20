@@ -501,6 +501,7 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
   }
   env <- environment()
+  browser()
   out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
   out <- rbindlist(out, idcol = "rep")
 
@@ -512,7 +513,7 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
   if (omitPastPines)
     atksKnownNextYr <- atksKnownNextYr[!massAttacksDTYearsToPres, on = "pixels"]
 
-  atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) * 1125 * 6.25), by = c("rep", "pixels")]
+  atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) ), by = c("rep", "pixels")]
   # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
 
   ## attacked area from data
