@@ -462,8 +462,8 @@ objFun <- function(p, startsOuter, propPineMap, currentAttacks, advectionDir, ad
   outBig <- purrr::pmap(.l = years,
                         starts = startsOuter,
               massAttacksMap = massAttacksMap,
-              advDir = advectionDir,
-              advMag = advectionMag,
+              #advDir = advectionDir,
+              #advMag = advectionMag,
               p = p, reps = reps,
               minNumAgents = minNumAgents,
               propPineMapInner = propPineMap,
@@ -479,7 +479,8 @@ objFun <- function(p, startsOuter, propPineMap, currentAttacks, advectionDir, ad
 
 objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
                         massAttacksMap, propPineMapInner, objFunValOnFail = 1e3,
-                        advDir, advMag, quotedSpread, fitType, omitPastPines) {
+                        # advDir, advMag,
+                        quotedSpread, fitType, omitPastPines) {
   currentAttacks <- massAttacksMap[[startYears]]
 
   if (omitPastPines) {
@@ -552,12 +553,12 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
       samZero <- sample(whZero, size = round(numNonZero/4, 0))
       samNonZero <- sample(whNonZero, size = numNonZero)
       sam <- c(samZero, samNonZero)
-      objFunVal <- abs(oo$ATKTREES[sam] - oo$abundSettled[sam])
-      # browser()
+      atkTrees <- oo$ATKTREES[sam]
+      abundSett <- oo$abundSettled[sam]
       isInf <- is.infinite(objFunVal)
-      if (any(isInf)) {
-        if (all(isInf)) {
-          negInf <- objFunVal < 0
+      # Rescale so that this is a relative abundance
+      ratio <- sum(abundSett)/sum(atkTrees)
+      abundSettRescaled <- abundSett/ratio
           if (any(negInf))
             objFunVal[isInf] <- 0
           if (any(!negInf))
