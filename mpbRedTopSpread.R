@@ -13,7 +13,8 @@ defineModule(sim, list(
   timeframe = as.POSIXlt(c(NA, NA)),
   timeunit = "year",
   citation = list(),
-  reqdPkgs = list("achubaty/amc@development", "data.table", "DEoptim", "EnvStats",
+  reqdPkgs = list("achubaty/amc@development", "CircStats", "data.table",
+                  "DEoptim", "EnvStats",
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "reproducible",
@@ -271,10 +272,15 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     tos <- xyFromCell(b, which(b[] > 0))
     if (length(froms) && length(tos)) {
       dirs <- distanceFromEachPoint(froms, tos, a, angles = TRUE)
+      pixels <- cellFromXY(a, xy = dirs[, c("x", "y")])
+      dt <- data.table(pixels, dirs[, c("dists", "angles")])
+      setorder(dt, dists)
+      dirs <- dt[, .SD[1:10], by = "pixels"]
 
       # From https://www.themathdoctors.org/averaging-angles/
-      avgDir <- try(deg(atan(sum(sin(dirs[, "angles"]))/sum(cos(dirs[, "angles"])))))
-      avgDist <- mean(dirs[, "dists"])
+      avgDir <- try(CircStats::deg(atan(sum(sin(dirs[, "angles"]))/sum(cos(dirs[, "angles"])))))
+      hist(dirs[["angles"]] %% (2*pi))
+      avgDist <- mean(dirs$dists)
       if (is(avgDir, "try-error")) browser()
     } else {
       avgDir <- NA
@@ -301,16 +307,18 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
   diffs2 <- purrr::transpose(diffs)
   diffs <- diffs2$ras
-  dirAvgs <- unlist(diffs2$avgDir)
+  dirAvgs <- diffs2$avgDir
+  distAvgs <- unlist(diffs2$avgDist)
+  dirAvgs <- data.table(period = paste0(nams[-length(nams)], "-to-", nams[-1]),
+                        dirAvgs, distAvgs)
   dirAvgs <- as.data.table(dirAvgs, keep.rownames = "YearPair")
-  names(dirAvgs) <- paste0(nams[-length(nams)], "-to-", nams[-1])
+  names(dirAvgs) <-
   names(diffs) <- nams[-length(nams)]
   dev()
   clearPlot()
   Plot(diffs, visualSqueeze = 1)
 
   # Average direction
-  froms <-
 
 
   mn <- (meanDist + advectionMagTmp)
