@@ -542,7 +542,7 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     oo[is.na(abundSettled),  abundSettled := 0]
     if (fitType == "ss1") {
       objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
-    } else if (fitType == "logSAD") {
+    } else {
       #if (startYears == "X2010") browser()
       # To balance the zeros and non-zeros, must sub-sample the zeros so there are equal
       #   number as the non-zeros
@@ -550,25 +550,28 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
       numNonZero <- tabulate(as.integer(whNonZero))
       whZero <- which(!whNonZero)
       whNonZero <- which(whNonZero)
+
+      # There are way more zeros than non zeros. We need to sub-sample the zeros or
+      #   they influence the objFun too much. Here, hard coded -- take 1/4 of the number
+      #   of zeros as there are non-zeros
       samZero <- sample(whZero, size = round(numNonZero/4, 0))
       samNonZero <- sample(whNonZero, size = numNonZero)
       sam <- c(samZero, samNonZero)
       atkTrees <- oo$ATKTREES[sam]
       abundSett <- oo$abundSettled[sam]
-      isInf <- is.infinite(objFunVal)
+
       # Rescale so that this is a relative abundance
       ratio <- sum(abundSett)/sum(atkTrees)
       abundSettRescaled <- abundSett/ratio
-          if (any(negInf))
-            objFunVal[isInf] <- 0
-          if (any(!negInf))
-            objFunVal[isInf] <- objFunValOnFail
-        } else {
-          objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
-        }
+
+      if (fitType == "logSAD") {
+        objFunVal <- log(abs(atkTrees - abundSettRescaled))
+      } else if (fitType == "SAD") {
+        objFunVal <- abs(atkTrees - abundSettRescaled)
+      } else {
+        stop("fitType must be logSAD or SAD")
       }
-    } else if (fitType == "SAD") {
-      objFunVal <- abs(oo$ATKTREES - oo$abundSettled)
+      # browser()
       isInf <- is.infinite(objFunVal)
       if (any(isInf)) {
         if (all(isInf)) {
