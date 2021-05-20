@@ -501,7 +501,6 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
   }
   env <- environment()
-  browser()
   out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
   out <- rbindlist(out, idcol = "rep")
 
