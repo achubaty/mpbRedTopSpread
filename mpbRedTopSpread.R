@@ -211,7 +211,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   dispersalKernel <- "exponential"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p <- c(p, sdDist = sdDist)
-  p["meanDistSD"] <- 1.3
+  p["meanDist"] <- 1.3
   p["meanDirSD"] <- 20
   p["advectionDir"] <- 0
   p["advectionDirSD"] <- 20
@@ -235,10 +235,15 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 saveStack = NULL))
   browser()
   if (isTRUE(type == "fit")) {
-    cl <- makeOptimalCluster(type = "FORK", MBper = 3000, length(p) * 10,
+    cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(20, length(p) * 10),
                              assumeHyperThreads = TRUE)
+    # cl <- future::makeClusterPSOCK(workers = c(rep("localhost", 20), rep("10.20.0.184", 20)), revtunnel = TRUE)
+    # clusterExport(cl, varlist = objsToExport)
+    # clusterEvalQ(cl, {
+    #
+    # })
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, -90, 0.9, 1.1, 5), upper = c(40000, 40000, 180, 1.8, 1.5, 30), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, -90, 0.9, 1.1, 5), upper = c(30000, 40000, 180, 1.8, 1.5, 30), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
@@ -501,7 +506,6 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
   }
   env <- environment()
-  browser()
   out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
   out <- rbindlist(out, idcol = "rep")
 
