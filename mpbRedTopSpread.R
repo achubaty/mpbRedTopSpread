@@ -18,7 +18,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "reproducible",
-                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9016)"),
+                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9017)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -209,7 +209,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   sdDist <- 1.2
   dispersalKernel <- "weibull"
   dispersalKernel <- "exponential"
-  browser()
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p <- c(p, sdDist = sdDist)
   p["meanDist"] <- 1e4
@@ -255,6 +254,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
       },
       maxDistance = 3e4))
 
+  browser()
   if (isTRUE(type == "fit")) {
     cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(20, length(p) * 10),
                              assumeHyperThreads = TRUE)
@@ -268,7 +268,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
-    browser()
     st11 <- system.time(
       out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
                   massAttacksMap = massAttacksMap)
@@ -623,8 +622,8 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
         }
       }
     }
-    objFunVal <- sum(objFunVal, na.rm = TRUE)
   }
+  objFunVal <- round(sum(objFunVal, na.rm = TRUE), 3)
   print(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
-  return(round(objFunVal, 3))
+  return(objFunVal)
 }
