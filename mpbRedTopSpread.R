@@ -18,7 +18,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "reproducible",
-                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9014)"),
+                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9016)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -209,13 +209,15 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   sdDist <- 1.2
   dispersalKernel <- "weibull"
   dispersalKernel <- "exponential"
+  browser()
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p <- c(p, sdDist = sdDist)
-  p["meanDist"] <- 1.3
-  p["meanDirSD"] <- 20
+  p["meanDist"] <- 1e4
+  p["meanDirSD"] <- 200
   p["advectionDir"] <- 0
+  p["advectionMag"] <- 3
   p["advectionDirSD"] <- 20
-  fitType <- "logSAD"
+  fitType <- "distanceFromEachPoint"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
@@ -233,7 +235,26 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 verbose = 0,
                                 skipChecks = TRUE,
                                 saveStack = NULL))
-  browser()
+
+  quotedSpread <-
+    quote(distanceFromEachPoint(
+      to = xyFromCell(atksRasNextYr, atksKnownNextYr$pixels),
+      from = xyFromCell(atksRasNextYr, starts),
+      angles = T, cumulativeFn = "+",
+      landscape = currentAttacks,
+      nextYrVec = atksRasNextYr[],
+      propPineMapInner = propPineMapInner[],
+      asym = p[2],
+      sdDist = p[4],
+      asymDir = rnorm(1, p[3], p[6]),
+      meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
+      distFn = function(dist, angle, landscape, fromCell, toCells, nextYrVec,
+                        propPineMapInner, asym, asymDir, meanDist, sdDist) {
+        #  if (any(!is.na(landscape[fromCell]))) browser()
+        -dexp(dist, rate = 1/meanDist)*landscape[fromCell]*propPineMapInner[toCells]*(asym^cos(angle-rad(asymDir)))
+      },
+      maxDistance = 3e4))
+
   if (isTRUE(type == "fit")) {
     cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(20, length(p) * 10),
                              assumeHyperThreads = TRUE)
@@ -247,8 +268,11 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
-    out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
+    browser()
+    st11 <- system.time(
+      out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
                   massAttacksMap = massAttacksMap)
+    )
   }
 
   # Visualize with maps
@@ -505,92 +529,100 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     })
     massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
   }
-  env <- environment()
-  out <- lapply(seq_len(reps), function(rep) eval(quotedSpread, envir = env))
-  out <- rbindlist(out, idcol = "rep")
-
   atksRasNextYr <- massAttacksMap[[endYears]]
   wh <- which(atksRasNextYr[] > 0)
   atksKnownNextYr <- setDT(list(pixels = wh, ATKTREES = atksRasNextYr[][wh]))
 
-  # Remove pixels that had already been attacked in the past -- emulating MPB Suppression efforts
-  if (omitPastPines)
-    atksKnownNextYr <- atksKnownNextYr[!massAttacksDTYearsToPres, on = "pixels"]
+  env <- environment()
 
-  atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) ), by = c("rep", "pixels")]
-  # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
+  out <- lapply(seq_len(reps), function(rep) as.data.table(eval(quotedSpread, envir = env)))
+  out <- rbindlist(out, idcol = "rep")
 
-  ## attacked area from data
-  # atksKnownNextYr <- atksKnownNextYr[ATKTREES > 0]
-  # i <- 1
-  oo <- atksKnownNextYr[atksNextYearSims, on = "pixels", nomatch = NA]
-  set(oo, which(is.na(oo$ATKTREES)), "ATKTREES", 0L)
-  # oo <- atksNextYearSims[atksKnownNextYr, on = "pixels", nomatch = NA]
-  if (reps > 1)
-    oo[, ATKTREES := ATKTREES[1], by = "pixels"]
+  if (fitType == "distanceFromEachPoint") {
+    objFunVal <- out[,"val"]
 
-  #i <- 0
-  if (fitType == "likelihood") {
-    probs <- oo[, list(prob = {
-      prob <- if (.N > 2) {
-        i <<- i + 1
-        # print(i)
-
-        max(1e-14, demp(ATKTREES[1], abundSettled))
-
-      } else {
-        1e-14
-      }
-    }), by = "pixels"]
-    objFunVal <- sum(-log(probs$prob))
   } else {
-    oo[is.na(abundSettled),  abundSettled := 0]
-    if (fitType == "ss1") {
-      objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
-    } else {
-      #if (startYears == "X2010") browser()
-      # To balance the zeros and non-zeros, must sub-sample the zeros so there are equal
-      #   number as the non-zeros
-      whNonZero <- oo$ATKTREES > 0
-      numNonZero <- tabulate(as.integer(whNonZero))
-      whZero <- which(!whNonZero)
-      whNonZero <- which(whNonZero)
 
-      # There are way more zeros than non zeros. We need to sub-sample the zeros or
-      #   they influence the objFun too much. Here, hard coded -- take 1/4 of the number
-      #   of zeros as there are non-zeros
-      samZero <- sample(whZero, size = round(numNonZero/4, 0))
-      samNonZero <- sample(whNonZero, size = numNonZero)
-      sam <- c(samZero, samNonZero)
-      atkTrees <- oo$ATKTREES[sam]
-      abundSett <- oo$abundSettled[sam]
 
-      # Rescale so that this is a relative abundance
-      ratio <- sum(abundSett)/sum(atkTrees)
-      abundSettRescaled <- abundSett/ratio
 
-      if (fitType == "logSAD") {
-        objFunVal <- log(abs(atkTrees - abundSettRescaled))
-      } else if (fitType == "SAD") {
-        objFunVal <- abs(atkTrees - abundSettRescaled)
-      } else {
-        stop("fitType must be logSAD or SAD")
-      }
-      # browser()
-      isInf <- is.infinite(objFunVal)
-      if (any(isInf)) {
-        if (all(isInf)) {
-          negInf <- objFunVal < 0
-          if (any(negInf))
-            objFunVal[isInf] <- 0
-          if (any(!negInf))
-            objFunVal[isInf] <- objFunValOnFail
+    # Remove pixels that had already been attacked in the past -- emulating MPB Suppression efforts
+    if (omitPastPines)
+      atksKnownNextYr <- atksKnownNextYr[!massAttacksDTYearsToPres, on = "pixels"]
+
+    atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) ), by = c("rep", "pixels")]
+    # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
+
+    ## attacked area from data
+    # atksKnownNextYr <- atksKnownNextYr[ATKTREES > 0]
+    # i <- 1
+    oo <- atksKnownNextYr[atksNextYearSims, on = "pixels", nomatch = NA]
+    set(oo, which(is.na(oo$ATKTREES)), "ATKTREES", 0L)
+    # oo <- atksNextYearSims[atksKnownNextYr, on = "pixels", nomatch = NA]
+    if (reps > 1)
+      oo[, ATKTREES := ATKTREES[1], by = "pixels"]
+
+    #i <- 0
+    if (fitType == "likelihood") {
+      probs <- oo[, list(prob = {
+        prob <- if (.N > 2) {
+          i <<- i + 1
+          # print(i)
+
+          max(1e-14, demp(ATKTREES[1], abundSettled))
+
         } else {
-          objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+          1e-14
+        }
+      }), by = "pixels"]
+      objFunVal <- sum(-log(probs$prob))
+    } else {
+      oo[is.na(abundSettled),  abundSettled := 0]
+      if (fitType == "ss1") {
+        objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
+      } else {
+        #if (startYears == "X2010") browser()
+        # To balance the zeros and non-zeros, must sub-sample the zeros so there are equal
+        #   number as the non-zeros
+        whNonZero <- oo$ATKTREES > 0
+        numNonZero <- tabulate(as.integer(whNonZero))
+        whZero <- which(!whNonZero)
+        whNonZero <- which(whNonZero)
+
+        # There are way more zeros than non zeros. We need to sub-sample the zeros or
+        #   they influence the objFun too much. Here, hard coded -- take 1/4 of the number
+        #   of zeros as there are non-zeros
+        samZero <- sample(whZero, size = round(numNonZero/4, 0))
+        samNonZero <- sample(whNonZero, size = numNonZero)
+        sam <- c(samZero, samNonZero)
+        atkTrees <- oo$ATKTREES[sam]
+        abundSett <- oo$abundSettled[sam]
+
+        # Rescale so that this is a relative abundance
+        ratio <- sum(abundSett)/sum(atkTrees)
+        abundSettRescaled <- abundSett/ratio
+
+        if (fitType == "logSAD") {
+          objFunVal <- log(abs(atkTrees - abundSettRescaled))
+        } else if (fitType == "SAD") {
+          objFunVal <- abs(atkTrees - abundSettRescaled)
+        } else {
+          stop("fitType must be logSAD or SAD")
+        }
+        # browser()
+        isInf <- is.infinite(objFunVal)
+        if (any(isInf)) {
+          if (all(isInf)) {
+            negInf <- objFunVal < 0
+            if (any(negInf))
+              objFunVal[isInf] <- 0
+            if (any(!negInf))
+              objFunVal[isInf] <- objFunValOnFail
+          } else {
+            objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
+          }
         }
       }
     }
-
     objFunVal <- sum(objFunVal, na.rm = TRUE)
   }
   print(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
