@@ -274,7 +274,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     #
     # })
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, -90, 0.9, 1.1, 5), upper = c(30000, 40000, 180, 1.8, 1.6, 30), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 1, -90, 0.9, 1.1, 5), upper = c(30000, 10, 180, 1.8, 1.5, 30), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
