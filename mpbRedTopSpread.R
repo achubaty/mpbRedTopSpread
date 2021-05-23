@@ -202,17 +202,16 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   # })
 
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
-  startsOuter <- starts
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
   omitPastPines <- TRUE
   sdDist <- 1.2
-  dispersalKernel <- "weibull"
-  dispersalKernel <- "exponential"
+  dispersalKernel <- "Weibull"
+  dispersalKernel <- "Exponential"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p <- c(p, sdDist = sdDist)
   p["meanDist"] <- 1e4
-  p["meanDirSD"] <- 200
+  p["meanDistSD"] <- 20
   p["advectionDir"] <- 0
   p["advectionMag"] <- 3
   p["advectionDirSD"] <- 20
@@ -243,18 +242,29 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
       landscape = currentAttacks,
       nextYrVec = atksRasNextYr[],
       propPineMapInner = propPineMapInner[],
+      kernel = dispersalKernel,
       asym = p[2],
       sdDist = p[4],
       asymDir = rnorm(1, p[3], p[6]),
       meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
       distFn = function(dist, angle, landscape, fromCell, toCells, nextYrVec,
-                        propPineMapInner, asym, asymDir, meanDist, sdDist) {
-        #  if (any(!is.na(landscape[fromCell]))) browser()
-        -dexp(dist, rate = 1/meanDist)*landscape[fromCell]*propPineMapInner[toCells]*(asym^cos(angle-rad(asymDir)))
+                        propPineMapInner, asym, asymDir, meanDist, sdDist, kernel) {
+        #  if (any(!is.na(landscape[fromCell])))
+        if (kernel == "Weibull") {
+          mn <- (meanDist)
+          sd <- mn/sdDist # 0.8 to 2.0 range
+          shape <- (sd/mn)^(-1.086)
+          scale <- mn/exp(lgamma(1+1/shape))
+          prob <- dweibull(dist, scale = scale, shape = shape)
+
+        } else {
+          prob <- dexp(dist, rate = 1/meanDist)
+
+        }
+        -prob*landscape[fromCell]*propPineMapInner[toCells]*(asym^cos(angle-rad(asymDir)))
       },
       maxDistance = 3e4))
 
-  browser()
   if (isTRUE(type == "fit")) {
     cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(20, length(p) * 10),
                              assumeHyperThreads = TRUE)
@@ -264,7 +274,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     #
     # })
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 300, -90, 0.9, 1.1, 5), upper = c(30000, 40000, 180, 1.8, 1.5, 30), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 300, -90, 0.9, 1.1, 5), upper = c(30000, 40000, 180, 1.8, 1.6, 30), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
@@ -273,9 +283,12 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                   massAttacksMap = massAttacksMap)
     )
   }
+  browser()
+
+  # HAVEN'T MADE IT PAST HERE
+  stop()
 
   # Visualize with maps
-  browser()
   # Kernel
   meanDist <- p[1] <- 14114;
   sdDist <- p[4] <- 1.51;
@@ -438,15 +451,13 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
 
 
-objFun <- function(p, startsOuter, propPineMap, currentAttacks, advectionDir, advectionMag,
+objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
                    quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
   #   then read them in locally from disk --> faster when bandwidth is slow
-  if (missing(startsOuter))
-    startsOuter <- get("startsOuter", envir = .GlobalEnv)
   if (missing(propPineMap))
     propPineMap <- get("propPineMap", envir = .GlobalEnv)
   if (missing(massAttacksMap))
@@ -487,29 +498,40 @@ objFun <- function(p, startsOuter, propPineMap, currentAttacks, advectionDir, ad
   # combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
 
   maxObjFunValIndiv <- -Inf
-  outBig <- purrr::pmap(.l = years,
-                        starts = startsOuter,
-              massAttacksMap = massAttacksMap,
-              #advDir = advectionDir,
-              #advMag = advectionMag,
-              p = p, reps = reps,
-              minNumAgents = minNumAgents,
-              propPineMapInner = propPineMap,
-              quotedSpread = quotedSpread,
-              fitType = fitType,
-              omitPastPines = omitPastPines,
-              .f = objFunInner
-              )
+  # mam <- raster::unstack(massAttacksMap)
+  outBig <- purrr::pmap(
+    .l = years,
+    starts = starts,
+              #currentAttacks = mam[-length(mam)],
+              #atksRasNextYr = mam[-1]
+    #startYears = startYears,
+    #endYears = endYears,
+    #starts = startsOuter,
+    massAttacksMap = massAttacksMap,
+    #advDir = advectionDir,
+    #advMag = advectionMag,
+    p = p, reps = reps,
+    minNumAgents = minNumAgents,
+    propPineMapInner = propPineMap,
+    quotedSpread = quotedSpread,
+    fitType = fitType,
+    omitPastPines = omitPastPines,
+    .f = objFunInner
+  )
 
   sum(unlist(outBig), na.rm = TRUE)
 
 }
 
 objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
-                        massAttacksMap, propPineMapInner, objFunValOnFail = 1e3,
+                        # atksRasNextYr, currentAttacks,
+                        massAttacksMap,
+                        propPineMapInner, objFunValOnFail = 1e3,
                         # advDir, advMag,
                         quotedSpread, fitType, omitPastPines) {
   currentAttacks <- massAttacksMap[[startYears]]
+
+  starts <- which(massAttacksMap[[startYears]][] > 0)
 
   if (omitPastPines) {
 
