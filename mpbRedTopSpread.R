@@ -207,7 +207,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   omitPastPines <- TRUE
   sdDist <- 1.2
   dispersalKernel <- "Weibull"
-  dispersalKernel <- "Exponential"
+  #dispersalKernel <- "Exponential"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p <- c(p, sdDist = sdDist)
   p["meanDist"] <- 1e4
@@ -242,15 +242,15 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
       landscape = currentAttacks,
       nextYrVec = atksRasNextYr[],
       propPineMapInner = propPineMapInner[],
-      kernel = dispersalKernel,
+      dispersalKernel = dispersalKernel,
       asym = p[2],
       sdDist = p[4],
       asymDir = rnorm(1, p[3], p[6]),
       meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
       distFn = function(dist, angle, landscape, fromCell, toCells, nextYrVec,
-                        propPineMapInner, asym, asymDir, meanDist, sdDist, kernel) {
+                        propPineMapInner, asym, asymDir, meanDist, sdDist, dispersalKernel) {
         #  if (any(!is.na(landscape[fromCell])))
-        if (kernel == "Weibull") {
+        if (dispersalKernel == "Weibull") {
           mn <- (meanDist)
           sd <- mn/sdDist # 0.8 to 2.0 range
           shape <- (sd/mn)^(-1.086)
@@ -274,7 +274,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     #
     # })
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 1, -90, 0.9, 1.1, 5), upper = c(30000, 10, 180, 1.8, 1.5, 30), reps = 1,
+    DEout <- DEoptim(fn = objFun, lower = c(500, 1, -90, 0.9, 1.1, 5), upper = c(30000, 10, 180, 1.8, 1.6, 30), reps = 1,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl), fitType = fitType)
   } else {
