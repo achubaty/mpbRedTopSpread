@@ -85,7 +85,8 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                              params = P(sim),
                              bgSettlingProp = P(sim)$bgSettlingProp,
                              type = P(sim)$type,
-                             currentTime = time(sim)
+                             currentTime = time(sim),
+                             reqdPkgs = reqdPkgs(module = currentModule(sim), modulePath = modulePath(sim))[[currentModule(sim)]]
            )
            # sim <- dispersal(sim)
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
@@ -148,7 +149,7 @@ plotFn <- function(sim) {
 
 ### spread
 dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
-                       currentAttacks, params, currentTime, bgSettlingProp, type) {
+                       currentAttacks, params, currentTime, bgSettlingProp, type, reqdPkgs) {
   ## check that MPB and pine rasters are the same resolution and ncells
   if (fromDisk(pineMap))
     pineMap[] <- pineMap[]
@@ -207,16 +208,22 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   omitPastPines <- TRUE
   sdDist <- 1.2
   dispersalKernel <- "Weibull"
-  #dispersalKernel <- "Exponential"
+  # dispersalKernel <- "Exponential"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
-  p <- c(p, sdDist = sdDist)
   p["meanDist"] <- 1e4
-  p["meanDistSD"] <- 20
-  p["advectionDir"] <- 0
   p["advectionMag"] <- 3
+  p["advectionDir"] <- 90
+  p["sdDist"] <- 1.2
+  p["meanDistSD"] <- 20
   p["advectionDirSD"] <- 20
+  lower <- c(  500,  1,   0, 0.9, 1.1,  5)
+  upper <- c(45000, 38, 330, 2.3, 1.7, 30)
+  p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
+
   fitType <- "distanceFromEachPoint"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
+  libPaths <- .libPaths()
+  objsToExport <- c("reqdPkgs", objsToExport, "objsToExport", "libPaths")
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
   quotedSpread <-
@@ -256,29 +263,87 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
           shape <- (sd/mn)^(-1.086)
           scale <- mn/exp(lgamma(1+1/shape))
           prob <- dweibull(dist, scale = scale, shape = shape)
+          infs <- is.infinite(prob)
+          if (any(infs))
+            prob[infs] <- 0
+
 
         } else {
           prob <- dexp(dist, rate = 1/meanDist)
 
         }
         -prob*landscape[fromCell]*propPineMapInner[toCells]*(asym^cos(angle-rad(asymDir)))
+        # if (any(is.infinite(out1))) browser()
+        # angle <- -30:30/10
+        # plot(deg(angle), asym^sin(angle-rad(asymDir)))
+        # plot(deg(angle), asym^cos(angle-rad(asymDir)))
       },
-      maxDistance = 3e4))
+      maxDistance = 7e4))
 
   if (isTRUE(type == "fit")) {
-    cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(20, length(p) * 10),
-                             assumeHyperThreads = TRUE)
-    # cl <- future::makeClusterPSOCK(workers = c(rep("localhost", 20), rep("10.20.0.184", 20)), revtunnel = TRUE)
-    # clusterExport(cl, varlist = objsToExport)
-    # clusterEvalQ(cl, {
-    #
-    # })
+     # cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(3, length(p) * 10),
+     #                          assumeHyperThreads = TRUE)
+
+    # browser()
+    message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
+    clusterIPs <- c(rep("localhost", 25), rep("10.20.0.184", 11), rep("10.20.0.97", 24))
+    clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
+    on.exit(try(parallel::stopCluster(clSingle)))
+    clusterExport(clSingle, varlist = objsToExport, envir = environment())
+    clusterEvalQ(clSingle, {
+      if (any(!dir.exists(libPaths)))
+        dir.create(libPaths[1], recursive = TRUE)
+      .libPaths(libPaths)
+      ## set CRAN repos; use binary linux packages if on Ubuntu
+      local({
+        options(Ncpus = parallel::detectCores() / 2)
+        options("repos" = c(CRAN = "https://cran.rstudio.com"))
+
+        if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
+          .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
+          .user.agent <- paste0(
+            "R/", getRversion(), " R (",
+            paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
+            ")"
+          )
+          options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
+                                          .os.version, "/latest")))
+          options(HTTPUserAgent = .user.agent)
+        }
+      })
+
+      if (!suppressWarnings(require("Require"))) {
+        install.packages("Require")
+      }
+
+      suppressMessages(Require::Require(reqdPkgs, install = TRUE, require = FALSE))
+      save(list = objsToExport, file = "allObjs.rda")
+    })
+    parallel::stopCluster(clSingle)
+    message("Starting cluster with all cores per machine")
+    cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
     on.exit(parallel::stopCluster(cl))
-    DEout <- DEoptim(fn = objFun, lower = c(500, 1, -90, 0.9, 1.1, 5), upper = c(30000, 10, 180, 1.8, 1.6, 30), reps = 1,
+    st <- system.time(clusterEvalQ(cl, {
+      load(file = "allObjs.rda", envir = .GlobalEnv)
+      .libPaths(libPaths)
+      suppressMessages(Require::Require(c("SpaDES.tools", "raster", "CircStats", "data.table"), install = FALSE))
+    }))
+    message("Starting DEoptim")
+    stPre <- Sys.time()
+    DEout <- DEoptim(fn = objFun,
+                     lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
+                     upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+                     reps = 1,
                      quotedSpread = quotedSpread,
-                     control = DEoptim.control(cluster = cl), fitType = fitType)
+                     control = DEoptim.control(cluster = cl),
+                     fitType = fitType)
+    saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
+    stPost <- Sys.time()
+    print(difftime(stPost, stPre))
+
   } else {
     st11 <- system.time(
+      for (ii in 1:100)
       out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
                   massAttacksMap = massAttacksMap)
     )
