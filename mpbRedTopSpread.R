@@ -211,17 +211,17 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   # dispersalKernel <- "Exponential"
   p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
   p["meanDist"] <- 1e4
-  p["advectionMag"] <- 3
+  p["advectionMag"] <- 5e3
   p["advectionDir"] <- 90
   p["sdDist"] <- 1.2
   p["meanDistSD"] <- 20
   p["advectionDirSD"] <- 20
-  lower <- c(  500,  1,   0, 0.9, 1.1,  5)
-  upper <- c(45000, 38, 330, 2.3, 1.7, 30)
+  lower <- c(25000,  3000,   0, 0.9, 1.001,  5)
+  upper <- c(45000, 20000, 330, 2.5, 1.6, 30)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
   fitType <- "distanceFromEachPoint"
-  objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType"))
+  objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
   libPaths <- .libPaths()
   objsToExport <- c("reqdPkgs", objsToExport, "objsToExport", "libPaths")
   list2env(mget(objsToExport), envir = .GlobalEnv)
@@ -241,52 +241,31 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                                 skipChecks = TRUE,
                                 saveStack = NULL))
 
+
   quotedSpread <-
     quote(distanceFromEachPoint(
       to = xyFromCell(atksRasNextYr, atksKnownNextYr$pixels),
       from = xyFromCell(atksRasNextYr, starts),
       angles = T, cumulativeFn = "+",
+      distFn = distanceFunction,
       landscape = currentAttacks,
       nextYrVec = atksRasNextYr[],
-      propPineMapInner = propPineMapInner[],
+      propPineMapInner = propPineMapInner,
       dispersalKernel = dispersalKernel,
       asym = p[2],
       sdDist = p[4],
       asymDir = rnorm(1, p[3], p[6]),
       meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
-      distFn = function(dist, angle, landscape, fromCell, toCells, nextYrVec,
-                        propPineMapInner, asym, asymDir, meanDist, sdDist, dispersalKernel) {
-        #  if (any(!is.na(landscape[fromCell])))
-        if (dispersalKernel == "Weibull") {
-          mn <- (meanDist)
-          sd <- mn/sdDist # 0.8 to 2.0 range
-          shape <- (sd/mn)^(-1.086)
-          scale <- mn/exp(lgamma(1+1/shape))
-          prob <- dweibull(dist, scale = scale, shape = shape)
-          infs <- is.infinite(prob)
-          if (any(infs))
-            prob[infs] <- 0
-
-
-        } else {
-          prob <- dexp(dist, rate = 1/meanDist)
-
-        }
-        -prob*landscape[fromCell]*propPineMapInner[toCells]*(asym^cos(angle-rad(asymDir)))
-        # if (any(is.infinite(out1))) browser()
-        # angle <- -30:30/10
-        # plot(deg(angle), asym^sin(angle-rad(asymDir)))
-        # plot(deg(angle), asym^cos(angle-rad(asymDir)))
-      },
       maxDistance = 7e4))
 
+  browser()
   if (isTRUE(type == "fit")) {
      # cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(3, length(p) * 10),
      #                          assumeHyperThreads = TRUE)
 
     # browser()
     message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
-    clusterIPs <- c(rep("localhost", 25), rep("10.20.0.184", 11), rep("10.20.0.97", 24))
+    clusterIPs <- c(rep("localhost", 26), rep("10.20.0.184", 12), rep("10.20.0.97", 22))
     clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
     on.exit(try(parallel::stopCluster(clSingle)))
     clusterExport(clSingle, varlist = objsToExport, envir = environment())
@@ -342,23 +321,192 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     print(difftime(stPost, stPre))
 
   } else {
-    st11 <- system.time(
-      for (ii in 1:100)
+    profvis::profvis(
       out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
                   massAttacksMap = massAttacksMap)
     )
   }
   browser()
+  objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
+  DEout <- readRDS(tail(objs, 1))
+  # p <- numeric()
+  # p[] <- c(38246.790564,   41.199916,  237.629198,    2.297772,    1.042395,   18.800792)
+  p[] <- c(28386.900711,15887.312435,  226.518642,    1.602424 ,   1.557437,   26.188510)
+  # p[] <- DEout$optim$bestmem[] # use [] to keep names
 
+
+  N1 <- 1e4
+
+  par(mfrow = c(3,4))
+  for (i in 1:10) {
+    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
+    sdDist = p[4]
+
+    mn <- (meanDist)
+    sd <- mn/sdDist # 0.8 to 2.0 range
+    shape <- (sd/mn)^(-1.086)
+    scale <- mn/exp(lgamma(1+1/shape))
+
+    ww <- rweibull(1e4, shape = shape, scale = scale)
+    hist(ww, xlim = c(0, 14e4), main = "", xlab = "Distance (m) from source")
+    abline(v = meanDist, col = "red")
+    abline(v = p[[1]], col = "green")
+
+  }
+  maxD <- 70000 + 125
+  r <- raster(extent(-maxD+ 250, maxD + 250 , -maxD, maxD), res = 250)
+  r[] <- 1
+  r <- gaussMap(r)
+  r <- r/maxValue(r)
+  abund <- raster(r)
+  #abund[mid] <- 10000
+
+  spiralsD <- spiralDistances(r, maxDis = 70000, cellSize = res(massAttacksMap)[1])
+  tos <- ( spiralsD[, c("row", "col")]) * res(r)
+  colnames(tos) <- c("x", "y")
+
+  sdDist = p[4]
+  par(mfrow = c(4,4))
+  for (i in 1:4) {
+    mid <- SpaDES.tools::middlePixel(abund)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
+    asymDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
+    dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                           propPineMapInner = r, fromCell = mid,
+                           toCells = toCells,
+                           asym = p["advectionMag"], angle = ddd[, "angles"],
+                           asymDir = asymDir)
+    abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
+    plot(abund)
+
+
+    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            propPineMapInner = r, fromCell = mid,
+                            toCells = toCells,
+                            asym = p["advectionMag"], angle = ddd[, "angles"],
+                            asymDir = asymDir)
+    abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
+    plot(abund)
+
+
+    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            propPineMapInner = r, fromCell = mid,
+                            toCells = toCells,
+                            asym = p["advectionMag"], angle = ddd[, "angles"],
+                            asymDir =  asymDir)
+    abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
+    plot(abund)
+    a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
+    abund[toCells] <- a4
+    plot(abund)
+  }
+  plot(type = "n", x = 1:10, axes = F, xlab = "", ylab = "")
+  legend(x = 2, y = 8, col = c("red", "green"), lty= 1,
+         legend = c("annual average", "global average"),
+         cex = 2)
+  mtext(text = "Dispersal kernels", outer = TRUE, line = -3, xpd = TRUE)
   # HAVEN'T MADE IT PAST HERE
+
+  ##########################################
+  maxD <- 70000 + 125
+  r <- raster(extent(-maxD+ 250, maxD + 250 , -maxD, maxD), res = 250)
+  r[] <- 1
+  r <- gaussMap(r)
+  r <- r/maxValue(r)
+  abund <- raster(r)
+  #abund[mid] <- 10000
+
+  spiralsD <- spiralDistances(r, maxDis = 70000, cellSize = res(massAttacksMap)[1])
+  tos <- ( spiralsD[, c("row", "col")]) * res(r)
+  colnames(tos) <- c("x", "y")
+
+  sdDist = p[4]
+  # p["advectionMag"] <- 15000
+  par(mfrow = c(4,4))
+  for (i in 1:4) {
+    mid <- SpaDES.tools::middlePixel(abund)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
+    asymDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
+    dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                           propPineMapInner = r, fromCell = mid,
+                           toCells = toCells,
+                           asym = p["advectionMag"], angle = ddd[, "angles"],
+                           asymDir = asymDir)
+    abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
+    plot(abund)
+
+
+    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                           propPineMapInner = r, fromCell = mid,
+                           toCells = toCells,
+                           asym = p["advectionMag"], angle = ddd[, "angles"],
+                           asymDir = asymDir)
+    abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
+    plot(abund)
+
+
+    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                           propPineMapInner = r, fromCell = mid,
+                           toCells = toCells,
+                           asym = p["advectionMag"], angle = ddd[, "angles"],
+                           asymDir =  asymDir)
+    abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
+    plot(abund)
+    a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
+    abund[toCells] <- a4
+    plot(abund)
+  }
+
+
+  ###############################################
+
+
   stop()
 
   # Visualize with maps
   # Kernel
-  meanDist <- p[1] <- 14114;
-  sdDist <- p[4] <- 1.51;
-  advectionMagTmp <- p[2] <- 32394;
-  advectionDir <- p[3] <- -52.53
+  advectionMagTmp <- p[2] ;
+  advectionDir <- p[3]
   r <- raster(extent(-20000, 20000, -20000, 20000), res = 100)
   r[] <- 1
   abund <- raster(r)
@@ -373,15 +521,67 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   abund[mid] <- max(abund[], na.rm = TRUE) * 1.5
   clearPlot(); Plot(abund)
 
+  #########################################################
+  #################### PREDICT MAPS
+  #########################################################
+  nams <- names(massAttacksMap)
+  for (i in seq(nams)[-length(nams)]) {
+    a <- massAttacksMap[[nams[i]]]
+    b <- propPineMap
+    whTos <- which(b[] >= 0.4)
+    whFroms <- which(a[] > 0)
+    if (length(whFroms) && length(whTos)) {
+      env <- new.env()
+      env$atksRasNextYr <- b
+      env$atksKnownNextYr <- data.table(pixels = whTos)
+      env$starts <- whFroms
+      env$currentAttacks <- a
+      env$dispersalKernel <- "exponential"
+      env$propPineMapInner <- propPineMap
+      env$p <- p
+      st <- system.time(out <- eval(quotedSpread, envir = env))
+      pixels <- cellFromXY(massAttacksMap, out[, c("x", "y")])
+      predictedMap <- raster(massAttacksMap)
+      predictedMap[whTos] <- log(-out[, "val"] + 1)
+      clearPlot()
+      currentAttacks <- env$currentAttacks
+      nextYearAttacks <- massAttacksMap[[nams[i+1]]]
+      Plot(currentAttacks, nextYearAttacks, predictedMap)
+    }
+  }
+  #########################################################
+  #########################################################
+
+
   nams <- names(massAttacksMap)
   # diffs <- list()
   diffs <- lapply(seq(nams)[-length(nams)], function(i) {
     a <- massAttacksMap[[nams[i]]]
-    b <- massAttacksMap[[nams[i+1]]]
-    froms <- xyFromCell(a, which(a[] > 0))
-    tos <- xyFromCell(b, which(b[] > 0))
-    if (length(froms) && length(tos)) {
+    b <- propPineMap
+    whTos <- which(b[] >= 0.2)
+    whFroms <- which(a[] > 0)
+    if (length(whFroms) && length(whTos)) {
+      env <- new.env()
+      env$atksRasNextYr <- b
+      env$atksKnownNextYr <- data.table(pixels = whTos)
+      env$starts <- whFroms
+      env$currentAttacks <- a
+      env$dispersalKernel <- "exponential"
+      env$propPineMapInner <- propPineMap
+      env$p <- p
+      st <- system.time(out <- eval(quotedSpread, envir = env))
+      pixels <- cellFromXY(massAttacksMap, out[, c("x", "y")])
+      predictedMap <- raster(massAttacksMap)
+      predictedMap[whTos] <- log(-out[, "val"] + 1)
+      clearPlot()
+      currentAttacks <- env$currentAttacks
+      nextYearAttacks <- massAttacksMap[[nams[i+1]]]
+      Plot(currentAttacks, nextYearAttacks, predictedMap)
+
+
       dirs <- distanceFromEachPoint(froms, tos, a, angles = TRUE)
+
+      browser()
       pixels <- cellFromXY(a, xy = dirs[, c("x", "y")])
       dt <- data.table(pixels, dirs[, c("dists", "angles")])
       setorder(dt, dists)
@@ -713,4 +913,69 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
   objFunVal <- round(sum(objFunVal, na.rm = TRUE), 3)
   print(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
   return(objFunVal)
+}
+
+spiralDistances <- function(pixelGroupMap, maxDis, cellSize) {
+  spiral <- which(focalWeight(pixelGroupMap, maxDis, type = "circle")>0, arr.ind = TRUE) -
+    ceiling(maxDis/cellSize) - 1
+  spiral <- cbind(spiral, dists = sqrt( (0 - spiral[,1]) ^ 2 + (0 - spiral[, 2]) ^ 2))
+  spiral <- spiral[order(spiral[, "dists"], apply(abs(spiral), 1, sum),
+                         abs(spiral[, 1]), abs(spiral[, 2])),, drop = FALSE]
+}
+
+distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVec,
+                             propPineMapInner, asym, asymDir, meanDist, sdDist, dispersalKernel) {
+
+  if (asym > 0) {
+    fromXY <- xyFromCell(propPineMapInner, fromCell)
+    toXYs <-  xyFromCell(propPineMapInner, toCells)
+    advectionXY <- c(x = sin(rad(asymDir))*asym, y = cos(rad(asymDir))*asym)
+    # neededXY <- toXYs - rep(advectionXY, each = NROW(toXYs))
+
+    # x <- numeric(NROW(toXYs))
+    # y <- x
+    x <- toXYs[, 'x'] - advectionXY[1]/meanDist*dist
+    y <- toXYs[, 'y'] - advectionXY[2]/meanDist*dist
+    newTo <- cbind(x, y)
+    colnames(newTo) <- c("x", "y")
+    # xLT0 <- toXYs[, "x"] < 0
+    # whXLT0 <- which(xLT0)
+    # whXGT0 <- which(!xLT0)
+    # x[whXLT0] <- toXYs[whXLT0, 'x'] - advectionXY[1]/meanDist*dist[whXLT0]
+    # x[whXGT0] <- toXYs[whXGT0, 'x'] - advectionXY[1]/meanDist*dist[whXGT0]
+    # yLT0 <- toXYs[, "y"] < 0
+    # whYLT0 <- which(yLT0)
+    # whYGT0 <- which(!yLT0)
+    # y[whYLT0] <- toXYs[whYLT0, 'y'] - advectionXY[2]/meanDist*dist[whYLT0]
+    # y[whYGT0] <- toXYs[whYGT0, 'y'] - advectionXY[2]/meanDist*dist[whYGT0]
+    # x <- toXYs[, 'x'] - advectionXY[1]/meanDist*toXYs[, 'x']
+    # y <- toXYs[, 'y'] - advectionXY[2]/meanDist*toXYs[, 'y']
+    dists <- cbind(origX = toXYs[, "x"], origY = toXYs[, "y"], origDist = dist,
+                   .pointDistance(from = fromXY, newTo, angles = FALSE))
+    dist <- dists[, "dists"]
+  }
+
+  if (grepl("Weibull", dispersalKernel)) {
+    mn <- (meanDist)
+    sd <- mn/sdDist # 0.8 to 2.0 range
+    shape <- (sd/mn)^(-1.086)
+    scale <- mn/exp(lgamma(1+1/shape))
+
+    if (grepl("Weibull", dispersalKernel)) {
+      prob <- -dweibull(dist, scale = scale, shape = shape)
+    }
+
+    infs <- is.infinite(prob)
+    if (any(infs))
+      prob[infs] <- 0
+  } else {
+    prob <- -dexp(dist, rate = 1/meanDist)
+
+  }
+
+  prob <- prob * landscape[fromCell] * propPineMapInner[][toCells]
+  # if (any(is.infinite(out1))) browser()
+  # angle <- -30:30/10
+  # plot(deg(angle), asym^sin(angle-rad(asymDir)))
+  # plot(deg(angle), asym^cos(angle-rad(asymDir)))
 }
