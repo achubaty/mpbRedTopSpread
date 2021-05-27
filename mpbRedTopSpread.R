@@ -15,9 +15,10 @@ defineModule(sim, list(
   citation = list(),
   reqdPkgs = list("achubaty/amc@development", "CircStats", "data.table",
                   "DEoptim", "EnvStats",
+                  "PredictiveEcology/SpaDES.core@development",
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
-                  "quickPlot", "raster", "RColorBrewer", "reproducible",
+                  "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
                   "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9018)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
@@ -265,10 +266,14 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
     # browser()
     message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
-    clusterIPs <- c(rep("localhost", 26), rep("10.20.0.184", 12), rep("10.20.0.97", 22))
+    # clusterIPs <- c(rep("10.20.0.217", 25))
+    clusterIPs <- c(rep("localhost", 39), rep("10.20.0.184", 15), rep("10.20.0.97", 24),
+                    rep("10.20.0.220", 21), rep("10.20.0.217", 21))
+
     clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
     on.exit(try(parallel::stopCluster(clSingle)))
     clusterExport(clSingle, varlist = objsToExport, envir = environment())
+    browser()
     clusterEvalQ(clSingle, {
       if (any(!dir.exists(libPaths)))
         dir.create(libPaths[1], recursive = TRUE)
@@ -314,8 +319,12 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                      upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
                      reps = 1,
                      quotedSpread = quotedSpread,
-                     control = DEoptim.control(cluster = cl),
+                     control = DEoptim.control(cluster = cl,
+                                               strategy = 6,
+                                               itermax = 120,
+                                               NP = 120),
                      fitType = fitType)
+
     saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
     stPost <- Sys.time()
     print(difftime(stPost, stPre))
@@ -332,6 +341,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   # p <- numeric()
   # p[] <- c(38246.790564,   41.199916,  237.629198,    2.297772,    1.042395,   18.800792)
   p[] <- c(28386.900711,15887.312435,  226.518642,    1.602424 ,   1.557437,   26.188510)
+
+  # bestvalit -493315.375000 # new LARGER dataset
+  p[] <- c(27526.427084, 11763.149827,144.834749, 2.408503, 1.468271, 24.73225104)
+
   # p[] <- DEout$optim$bestmem[] # use [] to keep names
 
 
@@ -525,10 +538,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   #################### PREDICT MAPS
   #########################################################
   nams <- names(massAttacksMap)
-  for (i in seq(nams)[-length(nams)]) {
+  out22 <- mclapply(seq(nams)[-length(nams)], mc.cores = 10, function(i) {
     a <- massAttacksMap[[nams[i]]]
     b <- propPineMap
-    whTos <- which(b[] >= 0.4)
+    whTos <- which(b[] >= 0.3)
     whFroms <- which(a[] > 0)
     if (length(whFroms) && length(whTos)) {
       env <- new.env()
@@ -543,12 +556,41 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
       pixels <- cellFromXY(massAttacksMap, out[, c("x", "y")])
       predictedMap <- raster(massAttacksMap)
       predictedMap[whTos] <- log(-out[, "val"] + 1)
-      clearPlot()
+      setMinMax(prepredictedMap)
+      setColors(predictedMap) <- "Reds"
       currentAttacks <- env$currentAttacks
+      currentAttacks[] <- log(currentAttacks[] + 1)
+      setColors(currentAttacks) <- "Reds"
       nextYearAttacks <- massAttacksMap[[nams[i+1]]]
+      nextYearAttacks[] <- log(nextYearAttacks[] + 1)
+      setColors(nextYearAttacks) <- "Reds"
+      AllThree <- raster(nextYearAttacks)
+      whCA <- which(!is.na(currentAttacks[]))
+      AllThree[] <- 0
+      AllThree[whCA] <- 1
+      whNY <- which(!is.na(nextYearAttacks[]))
+      AllThree[whNY] <- AllThree[whNY] + 2
+      whPM <- which(!is.na(predictedMap[]) & predictedMap[] > 0.006)
+      AllThree[whPM] <- AllThree[whPM] + 4
+      levels(AllThree) <- data.frame(ID = 1:7,
+                                     Label = c("LastYr", "NextYr", "LastAndNext", "PredYr", "LastYrAndPredYr", "NextYrAndPredYr", "LYRandNYandPY"))
+      setColors(AllThree) <- "Set2"
+      AllThree@legend@colortable[6] <- "red"
+
+      png(file.path("outputs", paste0("MPB_AnnualPrediction_", nams[i], ".png")), width = 5000, height = 1500, res = 300)
+      plot.new()
+      clearPlot()
       Plot(currentAttacks, nextYearAttacks, predictedMap)
+      dev.off()
+      png(file.path("outputs", paste0("MPB_AnnualPrediction_All_", nams[i], ".png")), width = 5000, height = 5000, res = 300)
+      plot.new()
+      clearPlot()
+      Plot(AllThree)
+      dev.off()
+
+      message("Finished predicting yr ", nams[i],": ", format(st[3], format = "auto"), " seconds")
     }
-  }
+  })
   #########################################################
   #########################################################
 
