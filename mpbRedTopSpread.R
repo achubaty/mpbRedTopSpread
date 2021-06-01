@@ -103,13 +103,30 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 }
 
 .inputObjects <- function(sim) {
+  cacheTags <- c(currentModule(sim), "function:.inputObjects")
+  cPath <- cachePath(sim)
+  dPath <- asPath(getOption("reproducible.destinationPath", dataPath(sim)), 1)
+  if (getOption("LandR.verbose", TRUE) > 0)
+    message(currentModule(sim), ": using dataPath '", dPath, "'.")
+
+  #mod$prj <- paste("+proj=aea +lat_1=47.5 +lat_2=54.5 +lat_0=0 +lon_0=-113",
+  #                 "+x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs +ellps=GRS80 +towgs84=0,0,0")
+  mod$prj <- paste("+proj=lcc +lat_1=49 +lat_2=77 +lat_0=0 +lon_0=-95",
+                   "+x_0=0 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
+
+  ## load study area
+  if (!suppliedElsewhere("studyArea")) {
+    sim$studyArea <- mpbStudyArea(ecoregions = c(112, 120, 122, 124, 126), mod$prj,
+                                  cPath, dPath)
+  }
+
   ## raster to match
   if (!suppliedElsewhere("rasterToMatch", sim)) {
     sim$rasterToMatch <- Cache(
       LandR::prepInputsLCC,
       year = 2005,
       destinationPath = dPath,
-      studyArea = sim$studyArea
+      studyArea = sf::as_Spatial(sim$studyArea)
     )
   }
 
