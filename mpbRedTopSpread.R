@@ -19,7 +19,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
-                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9019)"),
+                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9021)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -223,9 +223,25 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
   maxDistance <- 7e4
   fitType <- "distanceFromEachPoint"
-  objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
+  objsToExport <- setdiff(formalArgs("objFun"),
+                          c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
   libPaths <- .libPaths()
   objsToExport <- c("reqdPkgs", objsToExport, "objsToExport", "libPaths")
+
+  # RESAMPLE MAPS TO COARSER
+  nams <- names(massAttacksMap)
+  rasTmplate <- raster(massAttacksMap)
+  rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
+  stt <- system.time(
+    mams <-
+      raster::stack(
+        lapply(unstack(massAttacksMap), function(mam) aggregateRasByDT(mam, rasCoarse, fn = sum))
+      ))
+  names(mams) <- names(massAttacksMap)
+  massAttacksMap <- mams
+  propPineMap <- pp <- Cache(aggregateRasByDT, propPineMap, rasCoarse, fn = mean)
+
+
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
   quotedSpread <-
@@ -248,7 +264,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     quote({
       to <- raster::xyFromCell(atksRasNextYr, atksKnownNextYr$pixels)
       from <- raster::xyFromCell(atksRasNextYr, starts)
-      SpaDES.tools::distanceFromEachPoint(
+      out33 <- SpaDES.tools::distanceFromEachPoint(
         to = to,
         from = from,
         angles = TRUE,
@@ -260,94 +276,116 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
         dispersalKernel = dispersalKernel,
         asym = p[2],
         sdDist = p[4],
-        # cl = min(20, parallel::detectCores()),
+        cl = min(8, parallel::detectCores()),
         asymDir = rnorm(1, p[3], p[6]),
         meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
         maxDistance = maxDistance)
+      return(out33)
     })
 
   ips <- c("localhost", "10.20.0.184", "10.20.0.97", "10.20.0.220", "10.20.0.217")
   if (isTRUE(type == "fit")) {
-    # cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(3, length(p) * 10),
-    #                          assumeHyperThreads = TRUE)
-
-    message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
-    clSingle <- future::makeClusterPSOCK(workers = ips, revtunnel = TRUE)
-    message("testing speed on each to estimate number cores to use")
-    NumPopulations <- 118
-
-    out <- clusterEvalQ(clSingle, {
-      ss <- system.time({
-        for (i in 1:10000) rnorm(1e4)
-      })
-      data.table::data.table(elapsed = ss[3], cores = parallel::detectCores())
-    })
-
-    # parallel::clusterEvalQ(clSingle, system("pkill -f workRSOCK"))
-    names(out) <- ips
-    out2 <- rbindlist(out, idcol = TRUE)
-    out2[.id == "10.20.0.97", cores := ceiling(cores*0.7)]
-    relSpeed <- 1/out2$elapsed*NumPopulations
-    ord <- order(relSpeed)
-    out2[, relSpeed:= relSpeed]
-    out2[, rank:= rank(-relSpeed)]
-    nonHTcores <- out2$cores/2
-    out2[, nonHTcores:= nonHTcores]
-    sumNonHTcores <- sum(nonHTcores)
-    needHTcores <- NumPopulations - sumNonHTcores
-    for (i in seq_along(ips)) {
-      out2[rank == i, cores:= nonHTcores + round(needHTcores/2^i)]
-    }
-    m <- 0
-    while (sum(out2$cores) < NumPopulations) {
-      m <- ((m + 1) - 1) %% NROW(out2)  + 1
-      out2[m, cores := cores + 1]
-    }
-    reproducible::messageDF(out2)
-    clusterIPs <- rep(out2$.id, out2$cores)
-    # parallel::stopCluster(clSingle)
-
-    # clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
-    on.exit(try(parallel::stopCluster(clSingle)), add = TRUE)
-    clusterExport(clSingle, varlist = objsToExport, envir = environment())
-    clusterEvalQ(clSingle, {
-      if (any(!dir.exists(libPaths)))
-        dir.create(libPaths[1], recursive = TRUE)
-      .libPaths(libPaths)
-      ## set CRAN repos; use binary linux packages if on Ubuntu
-      local({
-        options(Ncpus = parallel::detectCores() / 2)
-        options("repos" = c(CRAN = "https://cran.rstudio.com"))
-
-        if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
-          .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
-          .user.agent <- paste0(
-            "R/", getRversion(), " R (",
-            paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
-            ")"
-          )
-          options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
-                                          .os.version, "/latest")))
-          options(HTTPUserAgent = .user.agent)
-        }
-      })
-
-      if (!suppressWarnings(require("Require"))) {
-        install.packages("Require")
-      }
-
-      suppressMessages(Require::Require(reqdPkgs, install = TRUE, require = FALSE))
-      save(list = objsToExport, file = "allObjs.rda")
-    })
-    parallel::stopCluster(clSingle)
+    fn <- ".allObjs.rda"
+    numCoresNeeded <- 118
+    clusterIPs <- clusterSetup(workers = ips, objects = mget(objsToExport),
+                               packages = reqdPkgs, libPaths = libPaths, doSpeedTest = FALSE, fn = fn,
+                               numCoresNeeded = numCoresNeeded)
     message("Starting cluster with all cores per machine")
     cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
     on.exit(try(parallel::stopCluster(cl)), add = TRUE)
+    reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table")), reqdPkgs, value = TRUE)
+    clusterExport(cl, varlist = c("fn", "reqdPkgs"), envir = environment())
     st <- system.time(clusterEvalQ(cl, {
-      load(file = "allObjs.rda", envir = .GlobalEnv)
+      load(file = fn, envir = .GlobalEnv)
       .libPaths(libPaths)
-      suppressMessages(Require::Require(c("SpaDES.tools", "raster", "CircStats", "data.table"), install = FALSE))
+      suppressMessages(
+        Require::Require(reqdPkgs, install = FALSE)
+      )
     }))
+    st <- system.time(clusterEvalQ(cl, {
+      try(unlink(fn), silent = TRUE)
+    }))
+
+    # cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(3, length(p) * 10),
+    #                          assumeHyperThreads = TRUE)
+
+    # message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
+    # clSingle <- future::makeClusterPSOCK(workers = ips, revtunnel = TRUE)
+    # message("testing speed on each to estimate number cores to use")
+
+    #
+    # out <- clusterEvalQ(clSingle, {
+    #   ss <- system.time({
+    #     for (i in 1:10000) rnorm(1e4)
+    #   })
+    #   data.table::data.table(elapsed = ss[3], cores = parallel::detectCores())
+    # })
+    #
+    # # parallel::clusterEvalQ(clSingle, system("pkill -f workRSOCK"))
+    # names(out) <- ips
+    # out2 <- rbindlist(out, idcol = TRUE)
+    # out2[.id == "10.20.0.97", cores := ceiling(cores*0.7)]
+    # relSpeed <- 1/out2$elapsed*NumPopulations
+    # ord <- order(relSpeed)
+    # out2[, relSpeed:= relSpeed]
+    # out2[, rank:= rank(-relSpeed)]
+    # nonHTcores <- out2$cores/2
+    # out2[, nonHTcores:= nonHTcores]
+    # sumNonHTcores <- sum(nonHTcores)
+    # needHTcores <- NumPopulations - sumNonHTcores
+    # for (i in seq_along(ips)) {
+    #   out2[rank == i, cores:= nonHTcores + round(needHTcores/2^i)]
+    # }
+    # m <- 0
+    # while (sum(out2$cores) < NumPopulations) {
+    #   m <- ((m + 1) - 1) %% NROW(out2)  + 1
+    #   out2[m, cores := cores + 1]
+    # }
+    # reproducible::messageDF(out2)
+    # clusterIPs <- rep(out2$.id, out2$cores)
+    # # parallel::stopCluster(clSingle)
+    #
+    # # clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
+    # on.exit(try(parallel::stopCluster(clSingle)), add = TRUE)
+    # clusterExport(clSingle, varlist = objsToExport, envir = environment())
+    # clusterEvalQ(clSingle, {
+    #   if (any(!dir.exists(libPaths)))
+    #     dir.create(libPaths[1], recursive = TRUE)
+    #   .libPaths(libPaths)
+    #   ## set CRAN repos; use binary linux packages if on Ubuntu
+    #   local({
+    #     options(Ncpus = parallel::detectCores() / 2)
+    #     options("repos" = c(CRAN = "https://cran.rstudio.com"))
+    #
+    #     if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
+    #       .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
+    #       .user.agent <- paste0(
+    #         "R/", getRversion(), " R (",
+    #         paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
+    #         ")"
+    #       )
+    #       options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
+    #                                       .os.version, "/latest")))
+    #       options(HTTPUserAgent = .user.agent)
+    #     }
+    #   })
+    #
+    #   if (!suppressWarnings(require("Require"))) {
+    #     install.packages("Require")
+    #   }
+    #
+    #   suppressMessages(Require::Require(reqdPkgs, install = TRUE, require = FALSE))
+    #   save(list = objsToExport, file = "allObjs.rda")
+    # })
+    # parallel::stopCluster(clSingle)
+    # message("Starting cluster with all cores per machine")
+    # cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
+    # on.exit(try(parallel::stopCluster(cl)), add = TRUE)
+    # st <- system.time(clusterEvalQ(cl, {
+    #   load(file = "allObjs.rda", envir = .GlobalEnv)
+    #   .libPaths(libPaths)
+    #   suppressMessages(Require::Require(c("SpaDES.tools", "raster", "CircStats", "data.table"), install = FALSE))
+    # }))
     message("Starting DEoptim")
     stPre <- Sys.time()
     DEout <- DEoptim(fn = objFun,
@@ -358,19 +396,38 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                      control = DEoptim.control(cluster = cl,
                                                strategy = 6,
                                                itermax = 120,
-                                               NP = NumPopulations),
+                                               NP = numCoresNeeded),
                      fitType = fitType)
 
     saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
     stPost <- Sys.time()
+    browser()
     print(difftime(stPost, stPre))
 
   } else if (isTRUE(type == "runOnce")) {
-    profvis::profvis(
-      out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
-                    massAttacksMap = massAttacksMap)
-    )
+    #profvis::profvis(
+      st1 <- system.time(out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
+                    massAttacksMap = massAttacksMap))
+      print(st1)
+    #)
+  } else if (isTRUE(type == "optim")) {
+    browser()
+    # cl <- parallel::makeForkCluster(3)
+    optimOut <- optim(fn = objFun, par = p,
+                     lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
+                     upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+                     reps = 1,
+                     method = "L-BFGS-B",
+                     quotedSpread = quotedSpread,
+                     control = list(trace = 3, factr = 1e2),
+                     #parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE),
+                     #control = DEoptim.control(cluster = cl,
+                    #                           strategy = 6,
+                    #                           itermax = 120,
+                    #                           NP = numCoresNeeded),
+                     fitType = fitType)
   }
+  browser()
   objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
   DEout <- readRDS(tail(objs, 1))
   # p <- numeric()
@@ -405,131 +462,68 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   #########################################################
   #################### PREDICT MAPS
   #########################################################
-  nams <- names(massAttacksMap)
-  rasTmplate <- raster(massAttacksMap)
-  rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
-  stt <- system.time(
-    mams <-
-      raster::stack(
-        lapply(unstack(massAttacksMap), function(mam) aggregateRasByDT(mam, rasCoarse, fn = sum))
-      ))
-  names(mams) <- names(massAttacksMap)
-  pp <- Cache(aggregateRasByDT, propPineMap, rasCoarse, fn = mean)
 
-  message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
-  clSingle <- future::makeClusterPSOCK(workers = ips[4], revtunnel = TRUE, outfile = "lol.txt")
-  on.exit(try(stopCluster(clSingle)), add = TRUE)
-  clusterExport(clSingle, varlist = c("mams", "pp", "nams", "maxDistance", "p"), envir = environment())
-  clusterExport(clSingle, varlist = "quotedSpread", envir = environment())
+  out22 <- lapply(seq(nams)[-length(nams)],  # mc.cores = 10,
+                  function(i) {
+                    a <- mams[[nams[i]]]#massAttacksMap[[nams[i]]]
+                    b <- pp#propPineMap
+                    whTos <- which(b[] >= 0.3)
+                    whFroms <- which(a[] > 0)
+                    if (length(whFroms) && length(whTos)) {
+                      env <- new.env()
+                      env$atksRasNextYr <- b
+                      env$atksKnownNextYr <- data.table::data.table(pixels = whTos)
+                      env$starts <- whFroms
+                      env$currentAttacks <- a
+                      env$dispersalKernel <- "exponential"
+                      env$propPineMapInner <- b# env$propPineMapInner <- propPineMap
+                      env$maxDistance <- maxDistance
+                      env$p <- p
+                      st <- system.time(out <- eval(quotedSpread, envir = env))
+                      saveFilename <- file.path("outputs", paste0("distanceSurface_", nams[i], "_", Sys.time(), ".qs"))
+                      qs::qsave(out, file = saveFilename)
+                      pixels <- cellFromXY(mams, out[, c("x", "y")])
+                      predictedMap <- raster(mams)
+                      # pixels <- cellFromXY(massAttacksMap, out[, c("x", "y")])
+                      # predictedMap <- raster(massAttacksMap)
+                      predictedMap[whTos] <- out[, "val"]
+                      setMinMax(predictedMap)
+                      setColors(predictedMap) <- "Reds"
+                      currentAttacks <- env$currentAttacks
+                      currentAttacks[] <- log(currentAttacks[] + 1)
+                      setColors(currentAttacks) <- "Reds"
+                      nextYearAttacks <- mams[[nams[i+1]]]
+                      # nextYearAttacks <- massAttacksMap[[nams[i+1]]]
+                      nextYearAttacks[] <- log(nextYearAttacks[] + 1)
+                      setColors(nextYearAttacks) <- "Reds"
+                      AllThree <- raster(nextYearAttacks)
+                      whCA <- which(!is.na(currentAttacks[]))
+                      AllThree[] <- 0
+                      AllThree[whCA] <- 1
+                      whNY <- which(!is.na(nextYearAttacks[]))
+                      AllThree[whNY] <- AllThree[whNY] + 2
+                      whPM <- which(!is.na(predictedMap[]) & predictedMap[] > 0.1)
+                      AllThree[whPM] <- AllThree[whPM] + 4
+                      levels(AllThree) <- data.frame(ID = 1:7,
+                                                     Label = c("LastYr", "NextYr", "LastAndNext", "PredYr", "LastYrAndPredYr", "NextYrAndPredYr", "LYRandNYandPY"))
+                      setColors(AllThree, n = 7) <- "Set2"
+                      AllThree@legend@colortable[6] <- "red"
 
-  clusterExport(clSingle, varlist = c("distanceFunction", "objFun"), envir = environment(objFun))
-  libPaths <- .libPaths()
-  browser()
-  objsToExport <- c("reqdPkgs", "libPaths")
-  clusterExport(clSingle, varlist = objsToExport, envir = environment())
-  clusterEvalQ(clSingle, {
-    if (any(!dir.exists(libPaths)))
-      dir.create(libPaths[1], recursive = TRUE)
-    .libPaths(libPaths)
-    ## set CRAN repos; use binary linux packages if on Ubuntu
-    local({
-      options(Ncpus = parallel::detectCores() / 2)
-      options("repos" = c(CRAN = "https://cran.rstudio.com"))
+                      png(file.path("outputs", paste0("MPB_AnnualPrediction_", nams[i], ".png")), width = 5000, height = 1500, res = 300)
+                      plot.new()
+                      clearPlot()
+                      Plot(currentAttacks, nextYearAttacks, predictedMap)
+                      dev.off()
+                      png(file.path("outputs", paste0("MPB_AnnualPrediction_All_", nams[i], ".png")), width = 5000, height = 5000, res = 300)
+                      plot.new()
+                      clearPlot()
+                      Plot(AllThree)
+                      dev.off()
 
-      if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
-        .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
-        .user.agent <- paste0(
-          "R/", getRversion(), " R (",
-          paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
-          ")"
-        )
-        options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
-                                        .os.version, "/latest")))
-        options(HTTPUserAgent = .user.agent)
-      }
-    })
-
-    if (!suppressWarnings(require("Require"))) {
-      install.packages("Require")
-    }
-
-    # suppressMessages(Require::Require(reqdPkgs, install = TRUE, require = FALSE))
-    # save(list = objsToExport, file = "allObjs.rda")
-  })
-  # outAll <<- append(mget(c("distanceFunction", "objFun"), envir = environment(objFun)),
-  #                   mget(c("mams", "pp", "nams", "maxDistance", "p", "quotedSpread")))
-  # clusterExport(clSingle, varlist = c("nams"), envir = environment())
-  browser()
-    out22 <- clusterApplyLB(cl = clSingle, x = seq(nams)[-length(nams)][1],  # mc.cores = 5,
-                    function(i) {
-                      message("A")
-                      a <- mams[[nams[i]]]#massAttacksMap[[nams[i]]]
-                      message("B")
-                      b <- pp#propPineMap
-                      message("C")
-                      whTos <- which(b[] >= 0.1)
-                      message("D")
-                      whFroms <- which(a[] > 0)
-                      message("E")
-                      if (length(whFroms) && length(whTos)) {
-                        env <- new.env()
-                        env$atksRasNextYr <- b
-                        env$atksKnownNextYr <- data.table::data.table(pixels = whTos)
-                        env$starts <- whFroms
-                        env$currentAttacks <- a
-                        env$dispersalKernel <- "exponential"
-                        env$propPineMapInner <- b
-                        # env$propPineMapInner <- propPineMap
-                        env$maxDistance <- maxDistance
-                        env$p <- p
-                        message("F")
-                        st <- system.time(out <- eval(quotedSpread, envir = env))
-                      }})
-    #     saveFilename <- file.path("outputs", paste0("distanceSurface_", nams[i], "_", Sys.time(), ".qs"))
-    #     qs::qsave(out, file = saveFilename)
-    #     pixels <- cellFromXY(mams, out[, c("x", "y")])
-    #     predictedMap <- raster(mams)
-    #     # pixels <- cellFromXY(massAttacksMap, out[, c("x", "y")])
-    #     # predictedMap <- raster(massAttacksMap)
-    #     predictedMap[whTos] <- log(-out[, "val"] + 1)
-    #     setMinMax(predictedMap)
-    #     browser()
-    #     setColors(predictedMap) <- "Reds"
-    #     currentAttacks <- env$currentAttacks
-    #     currentAttacks[] <- log(currentAttacks[] + 1)
-    #     setColors(currentAttacks) <- "Reds"
-    #     nextYearAttacks <- mams[[nams[i+1]]]
-    #     # nextYearAttacks <- massAttacksMap[[nams[i+1]]]
-    #     nextYearAttacks[] <- log(nextYearAttacks[] + 1)
-    #     setColors(nextYearAttacks) <- "Reds"
-    #     AllThree <- raster(nextYearAttacks)
-    #     whCA <- which(!is.na(currentAttacks[]))
-    #     AllThree[] <- 0
-    #     AllThree[whCA] <- 1
-    #     whNY <- which(!is.na(nextYearAttacks[]))
-    #     AllThree[whNY] <- AllThree[whNY] + 2
-    #     whPM <- which(!is.na(predictedMap[]) & predictedMap[] > 0.006)
-    #     AllThree[whPM] <- AllThree[whPM] + 4
-    #     levels(AllThree) <- data.frame(ID = 1:7,
-    #                                    Label = c("LastYr", "NextYr", "LastAndNext", "PredYr", "LastYrAndPredYr", "NextYrAndPredYr", "LYRandNYandPY"))
-    #     setColors(AllThree) <- "Set2"
-    #     AllThree@legend@colortable[6] <- "red"
-    #
-    #     png(file.path("outputs", paste0("MPB_AnnualPrediction_", nams[i], ".png")), width = 5000, height = 1500, res = 300)
-    #     plot.new()
-    #     clearPlot()
-    #     Plot(currentAttacks, nextYearAttacks, predictedMap)
-    #     dev.off()
-    #     png(file.path("outputs", paste0("MPB_AnnualPrediction_All_", nams[i], ".png")), width = 5000, height = 5000, res = 300)
-    #     plot.new()
-    #     clearPlot()
-    #     Plot(AllThree)
-    #     dev.off()
-    #
-    #     message("Finished predicting yr ", nams[i],": ", format(st[3], format = "auto"), " seconds")
-    #   }
-    #   return(saveFilename)
-    # })
+                      message("Finished predicting yr ", nams[i],": ", format(st[3], format = "auto"), " seconds")
+                    }
+                    return(saveFilename)
+                  })
 
 
 
@@ -926,7 +920,7 @@ objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
   # mam <- raster::unstack(massAttacksMap)
   outBig <- purrr::pmap(
     .l = years,
-    starts = starts,
+    #starts = starts,
     #currentAttacks = mam[-length(mam)],
     #atksRasNextYr = mam[-1]
     #startYears = startYears,
@@ -987,7 +981,18 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
   out <- rbindlist(out, idcol = "rep")
 
   if (fitType == "distanceFromEachPoint") {
-    objFunVal <- out[,"val"]
+    expectedNum <- out$val # * 1125 * prod(res(currentAttacks))/1e4
+
+    # Rescale -- we are interested in the distribution, not the absolute values -- maybe?: TODO
+    rescaler <- sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
+    # likelihood
+    lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*rescaler, size = 10e-07, log = TRUE)
+    theInfs <- is.infinite(lll)
+    if (any(theInfs)) {
+      lowestProb <- min(lll[!theInfs])
+      lll[theInfs] <- lowestProb
+    }
+    objFunVal <- lll
 
   } else {
 
@@ -1072,8 +1077,8 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
       }
     }
   }
-  objFunVal <- round(sum(objFunVal, na.rm = TRUE), 3)
-  print(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
+  objFunVal <- -round(sum(objFunVal, na.rm = TRUE), 3) # negative so optimizer does minimize
+  message(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
   return(objFunVal)
 }
 
@@ -1113,7 +1118,9 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVe
     # y[whYGT0] <- toXYs[whYGT0, 'y'] - advectionXY[2]/meanDist*dist[whYGT0]
     # x <- toXYs[, 'x'] - advectionXY[1]/meanDist*toXYs[, 'x']
     # y <- toXYs[, 'y'] - advectionXY[2]/meanDist*toXYs[, 'y']
-    dists <- cbind(origX = toXYs[, "x"], origY = toXYs[, "y"], origDist = dist,
+    if (!is.null(dim(dist))) dist <- dist[,1, drop = TRUE]
+    dists <- cbind(origX = toXYs[, "x"], origY = toXYs[, "y"],
+                   origDist = dist,
                    .pointDistance(from = fromXY, newTo, angles = FALSE))
     dist <- dists[, "dists"]
   }
@@ -1125,22 +1132,29 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVe
     scale <- mn/exp(lgamma(1+1/shape))
 
     if (grepl("Weibull", dispersalKernel)) {
-      prob <- -dweibull(dist, scale = scale, shape = shape)
+      prob <- dweibull(dist, scale = scale, shape = shape)
     }
 
     infs <- is.infinite(prob)
     if (any(infs))
       prob[infs] <- 0
   } else {
-    prob <- -dexp(dist, rate = 1/meanDist)
+    prob <- dexp(dist, rate = 1/meanDist)
 
   }
 
-  prob <- prob * landscape[fromCell] * propPineMapInner[][toCells]
+  # rescale the probability so area under curve is equal to source population size
+  ll <- landscape[fromCell]
+  prob1 <- prob * ll
+  #prob1 <- probInner * propPineMapInner[][toCells]
+  # rescaler <- ll/sum(prob1)
+  # prob1 <- prob1 * rescaler # make it negative
+
   # if (any(is.infinite(out1))) browser()
   # angle <- -30:30/10
   # plot(deg(angle), asym^sin(angle-rad(asymDir)))
   # plot(deg(angle), asym^cos(angle-rad(asymDir)))
+  return(prob1)
 }
 
 aggregateRasByDT <- function(ras, newRas, fn = sum) {
@@ -1156,4 +1170,85 @@ aggregateRasByDT <- function(ras, newRas, fn = sum) {
   newRasOut[pixes] <- dt2$vals
   newRasOut
 
+}
+
+clusterSetup <- function(workers, objectsToExport, packages,
+                         libPaths, doSpeedTest = FALSE, envir = parent.frame(),
+                         fn = ".allObjs.rda", numCoresNeeded) {
+  message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
+  clSingle <- future::makeClusterPSOCK(workers = workers, revtunnel = TRUE)
+  on.exit(try(parallel::stopCluster(clSingle), silent = TRUE), add = TRUE)
+  # NumPopulations <- 118
+
+  if (isTRUE(doSpeedTest)) {
+    message("testing speed on each to estimate number cores to use")
+    out <- clusterEvalQ(clSingle, {
+      ss <- system.time({
+        for (i in 1:10000) rnorm(1e4)
+      })
+      data.table::data.table(elapsed = ss[3], cores = parallel::detectCores())
+    })
+  } else {
+    out <- clusterEvalQ(clSingle, {
+      data.table::data.table(elapsed = 1, cores = parallel::detectCores())
+    })
+  }
+
+  # parallel::clusterEvalQ(clSingle, system("pkill -f workRSOCK"))
+  names(out) <- workers
+  out2 <- rbindlist(out, idcol = TRUE)
+  relSpeed <- 1/out2$elapsed*numCoresNeeded
+  ord <- order(relSpeed)
+  out2[, relSpeed:= relSpeed]
+  out2[, rank:= rank(-relSpeed)]
+  nonHTcores <- out2$cores/2
+  out2[, nonHTcores:= nonHTcores]
+  sumNonHTcores <- sum(nonHTcores)
+  needHTcores <- numCoresNeeded - sumNonHTcores
+  for (i in seq_along(workers)) {
+    out2[rank == i, cores:= nonHTcores + round(needHTcores/2^i)]
+  }
+  m <- 0
+  while (sum(out2$cores) < numCoresNeeded) {
+    m <- ((m + 1) - 1) %% NROW(out2)  + 1
+    out2[m, cores := cores + 1]
+  }
+  reproducible::messageDF(out2)
+  clusterIPs <- rep(out2$.id, out2$cores)
+  # parallel::stopCluster(clSingle)
+
+  # clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
+  clusterExport(clSingle, varlist = objsToExport, envir = envir)
+  clusterExport(clSingle, varlist = c("fn", "packages"), envir = environment())
+  clusterEvalQ(clSingle, {
+    if (any(!dir.exists(libPaths)))
+      dir.create(libPaths[1], recursive = TRUE)
+    .libPaths(libPaths)
+    ## set CRAN repos; use binary linux packages if on Ubuntu
+    local({
+      options(Ncpus = parallel::detectCores() / 2)
+      options("repos" = c(CRAN = "https://cran.rstudio.com"))
+
+      if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
+        .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
+        .user.agent <- paste0(
+          "R/", getRversion(), " R (",
+          paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
+          ")"
+        )
+        options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
+                                        .os.version, "/latest")))
+        options(HTTPUserAgent = .user.agent)
+      }
+    })
+
+    if (!suppressWarnings(require("Require"))) {
+      install.packages("Require")
+    }
+
+    suppressMessages(Require::Require(packages, install = TRUE, require = FALSE))
+    save(list = objsToExport, file = fn)
+  })
+  parallel::stopCluster(clSingle)
+  return(clusterIPs)
 }
