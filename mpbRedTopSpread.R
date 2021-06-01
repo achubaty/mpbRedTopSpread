@@ -19,7 +19,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
-                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9018)"),
+                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9019)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
@@ -221,6 +221,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   upper <- c(45000, 20000, 330, 2.5, 1.6, 30)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
+  maxDistance <- 7e4
   fitType <- "distanceFromEachPoint"
   objsToExport <- setdiff(formalArgs("objFun"), c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
   libPaths <- .libPaths()
@@ -244,36 +245,71 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
 
   quotedSpread <-
-    quote(distanceFromEachPoint(
-      to = xyFromCell(atksRasNextYr, atksKnownNextYr$pixels),
-      from = xyFromCell(atksRasNextYr, starts),
-      angles = T, cumulativeFn = "+",
-      distFn = distanceFunction,
-      landscape = currentAttacks,
-      nextYrVec = atksRasNextYr[],
-      propPineMapInner = propPineMapInner,
-      dispersalKernel = dispersalKernel,
-      asym = p[2],
-      sdDist = p[4],
-      asymDir = rnorm(1, p[3], p[6]),
-      meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
-      maxDistance = 7e4))
+    quote({
+      to <- raster::xyFromCell(atksRasNextYr, atksKnownNextYr$pixels)
+      from <- raster::xyFromCell(atksRasNextYr, starts)
+      SpaDES.tools::distanceFromEachPoint(
+        to = to,
+        from = from,
+        angles = TRUE,
+        cumulativeFn = "+",
+        distFn = distanceFunction,
+        landscape = currentAttacks,
+        nextYrVec = atksRasNextYr[],
+        propPineMapInner = propPineMapInner,
+        dispersalKernel = dispersalKernel,
+        asym = p[2],
+        sdDist = p[4],
+        # cl = min(20, parallel::detectCores()),
+        asymDir = rnorm(1, p[3], p[6]),
+        meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
+        maxDistance = maxDistance)
+    })
 
-  browser()
+  ips <- c("localhost", "10.20.0.184", "10.20.0.97", "10.20.0.220", "10.20.0.217")
   if (isTRUE(type == "fit")) {
-     # cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(3, length(p) * 10),
-     #                          assumeHyperThreads = TRUE)
+    # cl <- makeOptimalCluster(type = "FORK", MBper = 3000, min(3, length(p) * 10),
+    #                          assumeHyperThreads = TRUE)
 
-    # browser()
     message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
-    # clusterIPs <- c(rep("10.20.0.217", 25))
-    clusterIPs <- c(rep("localhost", 39), rep("10.20.0.184", 15), rep("10.20.0.97", 24),
-                    rep("10.20.0.220", 21), rep("10.20.0.217", 21))
+    clSingle <- future::makeClusterPSOCK(workers = ips, revtunnel = TRUE)
+    message("testing speed on each to estimate number cores to use")
+    NumPopulations <- 118
 
-    clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
-    on.exit(try(parallel::stopCluster(clSingle)))
+    out <- clusterEvalQ(clSingle, {
+      ss <- system.time({
+        for (i in 1:10000) rnorm(1e4)
+      })
+      data.table::data.table(elapsed = ss[3], cores = parallel::detectCores())
+    })
+
+    # parallel::clusterEvalQ(clSingle, system("pkill -f workRSOCK"))
+    names(out) <- ips
+    out2 <- rbindlist(out, idcol = TRUE)
+    out2[.id == "10.20.0.97", cores := ceiling(cores*0.7)]
+    relSpeed <- 1/out2$elapsed*NumPopulations
+    ord <- order(relSpeed)
+    out2[, relSpeed:= relSpeed]
+    out2[, rank:= rank(-relSpeed)]
+    nonHTcores <- out2$cores/2
+    out2[, nonHTcores:= nonHTcores]
+    sumNonHTcores <- sum(nonHTcores)
+    needHTcores <- NumPopulations - sumNonHTcores
+    for (i in seq_along(ips)) {
+      out2[rank == i, cores:= nonHTcores + round(needHTcores/2^i)]
+    }
+    m <- 0
+    while (sum(out2$cores) < NumPopulations) {
+      m <- ((m + 1) - 1) %% NROW(out2)  + 1
+      out2[m, cores := cores + 1]
+    }
+    reproducible::messageDF(out2)
+    clusterIPs <- rep(out2$.id, out2$cores)
+    # parallel::stopCluster(clSingle)
+
+    # clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
+    on.exit(try(parallel::stopCluster(clSingle)), add = TRUE)
     clusterExport(clSingle, varlist = objsToExport, envir = environment())
-    browser()
     clusterEvalQ(clSingle, {
       if (any(!dir.exists(libPaths)))
         dir.create(libPaths[1], recursive = TRUE)
@@ -306,7 +342,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     parallel::stopCluster(clSingle)
     message("Starting cluster with all cores per machine")
     cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
-    on.exit(parallel::stopCluster(cl))
+    on.exit(try(parallel::stopCluster(cl)), add = TRUE)
     st <- system.time(clusterEvalQ(cl, {
       load(file = "allObjs.rda", envir = .GlobalEnv)
       .libPaths(libPaths)
@@ -322,30 +358,29 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                      control = DEoptim.control(cluster = cl,
                                                strategy = 6,
                                                itermax = 120,
-                                               NP = 120),
+                                               NP = NumPopulations),
                      fitType = fitType)
 
     saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
     stPost <- Sys.time()
     print(difftime(stPost, stPre))
 
-  } else {
+  } else if (isTRUE(type == "runOnce")) {
     profvis::profvis(
       out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
-                  massAttacksMap = massAttacksMap)
+                    massAttacksMap = massAttacksMap)
     )
   }
-  browser()
   objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
   DEout <- readRDS(tail(objs, 1))
   # p <- numeric()
   # p[] <- c(38246.790564,   41.199916,  237.629198,    2.297772,    1.042395,   18.800792)
-  p[] <- c(28386.900711,15887.312435,  226.518642,    1.602424 ,   1.557437,   26.188510)
+  # p[] <- c(28386.900711,15887.312435,  226.518642,    1.602424 ,   1.557437,   26.188510)
 
   # bestvalit -493315.375000 # new LARGER dataset
-  p[] <- c(27526.427084, 11763.149827,144.834749, 2.408503, 1.468271, 24.73225104)
+  # p[] <- c(27526.427084, 11763.149827,144.834749, 2.408503, 1.468271, 24.73225104)
 
-  # p[] <- DEout$optim$bestmem[] # use [] to keep names
+  p[] <- DEout$optim$bestmem[] # use [] to keep names
 
 
   N1 <- 1e4
@@ -366,7 +401,145 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     abline(v = p[[1]], col = "green")
 
   }
-  maxD <- 70000 + 125
+
+  #########################################################
+  #################### PREDICT MAPS
+  #########################################################
+  nams <- names(massAttacksMap)
+  rasTmplate <- raster(massAttacksMap)
+  rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
+  stt <- system.time(
+    mams <-
+      raster::stack(
+        lapply(unstack(massAttacksMap), function(mam) aggregateRasByDT(mam, rasCoarse, fn = sum))
+      ))
+  names(mams) <- names(massAttacksMap)
+  pp <- Cache(aggregateRasByDT, propPineMap, rasCoarse, fn = mean)
+
+  message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
+  clSingle <- future::makeClusterPSOCK(workers = ips[4], revtunnel = TRUE, outfile = "lol.txt")
+  on.exit(try(stopCluster(clSingle)), add = TRUE)
+  clusterExport(clSingle, varlist = c("mams", "pp", "nams", "maxDistance", "p"), envir = environment())
+  clusterExport(clSingle, varlist = "quotedSpread", envir = environment())
+
+  clusterExport(clSingle, varlist = c("distanceFunction", "objFun"), envir = environment(objFun))
+  libPaths <- .libPaths()
+  browser()
+  objsToExport <- c("reqdPkgs", "libPaths")
+  clusterExport(clSingle, varlist = objsToExport, envir = environment())
+  clusterEvalQ(clSingle, {
+    if (any(!dir.exists(libPaths)))
+      dir.create(libPaths[1], recursive = TRUE)
+    .libPaths(libPaths)
+    ## set CRAN repos; use binary linux packages if on Ubuntu
+    local({
+      options(Ncpus = parallel::detectCores() / 2)
+      options("repos" = c(CRAN = "https://cran.rstudio.com"))
+
+      if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
+        .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
+        .user.agent <- paste0(
+          "R/", getRversion(), " R (",
+          paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
+          ")"
+        )
+        options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
+                                        .os.version, "/latest")))
+        options(HTTPUserAgent = .user.agent)
+      }
+    })
+
+    if (!suppressWarnings(require("Require"))) {
+      install.packages("Require")
+    }
+
+    # suppressMessages(Require::Require(reqdPkgs, install = TRUE, require = FALSE))
+    # save(list = objsToExport, file = "allObjs.rda")
+  })
+  # outAll <<- append(mget(c("distanceFunction", "objFun"), envir = environment(objFun)),
+  #                   mget(c("mams", "pp", "nams", "maxDistance", "p", "quotedSpread")))
+  # clusterExport(clSingle, varlist = c("nams"), envir = environment())
+  browser()
+    out22 <- clusterApplyLB(cl = clSingle, x = seq(nams)[-length(nams)][1],  # mc.cores = 5,
+                    function(i) {
+                      message("A")
+                      a <- mams[[nams[i]]]#massAttacksMap[[nams[i]]]
+                      message("B")
+                      b <- pp#propPineMap
+                      message("C")
+                      whTos <- which(b[] >= 0.1)
+                      message("D")
+                      whFroms <- which(a[] > 0)
+                      message("E")
+                      if (length(whFroms) && length(whTos)) {
+                        env <- new.env()
+                        env$atksRasNextYr <- b
+                        env$atksKnownNextYr <- data.table::data.table(pixels = whTos)
+                        env$starts <- whFroms
+                        env$currentAttacks <- a
+                        env$dispersalKernel <- "exponential"
+                        env$propPineMapInner <- b
+                        # env$propPineMapInner <- propPineMap
+                        env$maxDistance <- maxDistance
+                        env$p <- p
+                        message("F")
+                        st <- system.time(out <- eval(quotedSpread, envir = env))
+                      }})
+    #     saveFilename <- file.path("outputs", paste0("distanceSurface_", nams[i], "_", Sys.time(), ".qs"))
+    #     qs::qsave(out, file = saveFilename)
+    #     pixels <- cellFromXY(mams, out[, c("x", "y")])
+    #     predictedMap <- raster(mams)
+    #     # pixels <- cellFromXY(massAttacksMap, out[, c("x", "y")])
+    #     # predictedMap <- raster(massAttacksMap)
+    #     predictedMap[whTos] <- log(-out[, "val"] + 1)
+    #     setMinMax(predictedMap)
+    #     browser()
+    #     setColors(predictedMap) <- "Reds"
+    #     currentAttacks <- env$currentAttacks
+    #     currentAttacks[] <- log(currentAttacks[] + 1)
+    #     setColors(currentAttacks) <- "Reds"
+    #     nextYearAttacks <- mams[[nams[i+1]]]
+    #     # nextYearAttacks <- massAttacksMap[[nams[i+1]]]
+    #     nextYearAttacks[] <- log(nextYearAttacks[] + 1)
+    #     setColors(nextYearAttacks) <- "Reds"
+    #     AllThree <- raster(nextYearAttacks)
+    #     whCA <- which(!is.na(currentAttacks[]))
+    #     AllThree[] <- 0
+    #     AllThree[whCA] <- 1
+    #     whNY <- which(!is.na(nextYearAttacks[]))
+    #     AllThree[whNY] <- AllThree[whNY] + 2
+    #     whPM <- which(!is.na(predictedMap[]) & predictedMap[] > 0.006)
+    #     AllThree[whPM] <- AllThree[whPM] + 4
+    #     levels(AllThree) <- data.frame(ID = 1:7,
+    #                                    Label = c("LastYr", "NextYr", "LastAndNext", "PredYr", "LastYrAndPredYr", "NextYrAndPredYr", "LYRandNYandPY"))
+    #     setColors(AllThree) <- "Set2"
+    #     AllThree@legend@colortable[6] <- "red"
+    #
+    #     png(file.path("outputs", paste0("MPB_AnnualPrediction_", nams[i], ".png")), width = 5000, height = 1500, res = 300)
+    #     plot.new()
+    #     clearPlot()
+    #     Plot(currentAttacks, nextYearAttacks, predictedMap)
+    #     dev.off()
+    #     png(file.path("outputs", paste0("MPB_AnnualPrediction_All_", nams[i], ".png")), width = 5000, height = 5000, res = 300)
+    #     plot.new()
+    #     clearPlot()
+    #     Plot(AllThree)
+    #     dev.off()
+    #
+    #     message("Finished predicting yr ", nams[i],": ", format(st[3], format = "auto"), " seconds")
+    #   }
+    #   return(saveFilename)
+    # })
+
+
+
+
+  #########################################################
+  #########################################################
+  browser()
+
+
+  maxD <- maxDistance + 125
   r <- raster(extent(-maxD+ 250, maxD + 250 , -maxD, maxD), res = 250)
   r[] <- 1
   r <- gaussMap(r)
@@ -374,11 +547,88 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   abund <- raster(r)
   #abund[mid] <- 10000
 
-  spiralsD <- spiralDistances(r, maxDis = 70000, cellSize = res(massAttacksMap)[1])
+  spiralsD <- spiralDistances(r, maxDis = maxDistance, cellSize = res(massAttacksMap)[1])
   tos <- ( spiralsD[, c("row", "col")]) * res(r)
   colnames(tos) <- c("x", "y")
 
   sdDist = p[4]
+  par(mfrow = c(4,4))
+  for (i in 1:4) {
+    mid <- SpaDES.tools::middlePixel(abund)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
+    asymDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
+    print("aaa")
+    dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                           propPineMapInner = r, fromCell = mid,
+                           toCells = toCells,
+                           asym = p["advectionMag"], angle = ddd[, "angles"],
+                           asymDir = asymDir)
+    abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
+    plot(abund)
+
+
+    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            propPineMapInner = r, fromCell = mid,
+                            toCells = toCells,
+                            asym = p["advectionMag"], angle = ddd[, "angles"],
+                            asymDir = asymDir)
+    abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
+    plot(abund)
+
+
+    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
+    (midXY <- xyFromCell(r, mid))
+    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
+    nas <- is.na(toCells)
+    ddd <- ddd[!nas,]
+    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
+    dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
+                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            propPineMapInner = r, fromCell = mid,
+                            toCells = toCells,
+                            asym = p["advectionMag"], angle = ddd[, "angles"],
+                            asymDir =  asymDir)
+    abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
+    plot(abund)
+    a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
+    abund[toCells] <- a4
+    plot(abund)
+  }
+  plot(type = "n", x = 1:10, axes = F, xlab = "", ylab = "")
+  legend(x = 2, y = 8, col = c("red", "green"), lty= 1,
+         legend = c("annual average", "global average"),
+         cex = 2)
+  mtext(text = "Dispersal kernels", outer = TRUE, line = -3, xpd = TRUE)
+  # HAVEN'T MADE IT PAST HERE
+
+  ##########################################
+  maxD <- maxDistance + 125
+  r <- raster(extent(-maxD+ 250, maxD + 250 , -maxD, maxD), res = 250)
+  r[] <- 1
+  r <- gaussMap(r)
+  r <- r/maxValue(r)
+  abund <- raster(r)
+  #abund[mid] <- 10000
+
+  spiralsD <- spiralDistances(r, maxDis = maxDistance, cellSize = res(massAttacksMap)[1])
+  tos <- ( spiralsD[, c("row", "col")]) * res(r)
+  colnames(tos) <- c("x", "y")
+
+  sdDist = p[4]
+  # p["advectionMag"] <- 15000
   par(mfrow = c(4,4))
   for (i in 1:4) {
     mid <- SpaDES.tools::middlePixel(abund)
@@ -433,82 +683,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     abund[toCells] <- a4
     plot(abund)
   }
-  plot(type = "n", x = 1:10, axes = F, xlab = "", ylab = "")
-  legend(x = 2, y = 8, col = c("red", "green"), lty= 1,
-         legend = c("annual average", "global average"),
-         cex = 2)
-  mtext(text = "Dispersal kernels", outer = TRUE, line = -3, xpd = TRUE)
-  # HAVEN'T MADE IT PAST HERE
-
-  ##########################################
-  maxD <- 70000 + 125
-  r <- raster(extent(-maxD+ 250, maxD + 250 , -maxD, maxD), res = 250)
-  r[] <- 1
-  r <- gaussMap(r)
-  r <- r/maxValue(r)
-  abund <- raster(r)
-  #abund[mid] <- 10000
-
-  spiralsD <- spiralDistances(r, maxDis = 70000, cellSize = res(massAttacksMap)[1])
-  tos <- ( spiralsD[, c("row", "col")]) * res(r)
-  colnames(tos) <- c("x", "y")
-
-  sdDist = p[4]
-  # p["advectionMag"] <- 15000
-  par(mfrow = c(4,4))
-  for (i in 1:4) {
-    mid <- SpaDES.tools::middlePixel(abund)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
-    asymDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
-    dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                           propPineMapInner = r, fromCell = mid,
-                           toCells = toCells,
-                           asym = p["advectionMag"], angle = ddd[, "angles"],
-                           asymDir = asymDir)
-    abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
-    plot(abund)
-
-
-    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                           propPineMapInner = r, fromCell = mid,
-                           toCells = toCells,
-                           asym = p["advectionMag"], angle = ddd[, "angles"],
-                           asymDir = asymDir)
-    abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
-    plot(abund)
-
-
-    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                           propPineMapInner = r, fromCell = mid,
-                           toCells = toCells,
-                           asym = p["advectionMag"], angle = ddd[, "angles"],
-                           asymDir =  asymDir)
-    abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
-    plot(abund)
-    a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
-    abund[toCells] <- a4
-    plot(abund)
-  }
 
 
   ###############################################
@@ -526,73 +700,13 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   mid <- SpaDES.tools::middlePixel(abund)
   abund[mid] <- 10000
   out <- spread3(mid, rasQuality = r, rasAbundance = abund,
-          advectionDir = advectionDir,
-          advectionMag = advectionMagTmp,
-          meanDist = meanDist,
-          sdDist = sdDist, dispersalKernel = "weibull", plot.it = F)
+                 advectionDir = advectionDir,
+                 advectionMag = advectionMagTmp,
+                 meanDist = meanDist,
+                 sdDist = sdDist, dispersalKernel = "weibull", plot.it = F)
   abund[out$pixels] <- out$abundSettled
   abund[mid] <- max(abund[], na.rm = TRUE) * 1.5
   clearPlot(); Plot(abund)
-
-  #########################################################
-  #################### PREDICT MAPS
-  #########################################################
-  nams <- names(massAttacksMap)
-  out22 <- mclapply(seq(nams)[-length(nams)], mc.cores = 10, function(i) {
-    a <- massAttacksMap[[nams[i]]]
-    b <- propPineMap
-    whTos <- which(b[] >= 0.3)
-    whFroms <- which(a[] > 0)
-    if (length(whFroms) && length(whTos)) {
-      env <- new.env()
-      env$atksRasNextYr <- b
-      env$atksKnownNextYr <- data.table(pixels = whTos)
-      env$starts <- whFroms
-      env$currentAttacks <- a
-      env$dispersalKernel <- "exponential"
-      env$propPineMapInner <- propPineMap
-      env$p <- p
-      st <- system.time(out <- eval(quotedSpread, envir = env))
-      pixels <- cellFromXY(massAttacksMap, out[, c("x", "y")])
-      predictedMap <- raster(massAttacksMap)
-      predictedMap[whTos] <- log(-out[, "val"] + 1)
-      setMinMax(prepredictedMap)
-      setColors(predictedMap) <- "Reds"
-      currentAttacks <- env$currentAttacks
-      currentAttacks[] <- log(currentAttacks[] + 1)
-      setColors(currentAttacks) <- "Reds"
-      nextYearAttacks <- massAttacksMap[[nams[i+1]]]
-      nextYearAttacks[] <- log(nextYearAttacks[] + 1)
-      setColors(nextYearAttacks) <- "Reds"
-      AllThree <- raster(nextYearAttacks)
-      whCA <- which(!is.na(currentAttacks[]))
-      AllThree[] <- 0
-      AllThree[whCA] <- 1
-      whNY <- which(!is.na(nextYearAttacks[]))
-      AllThree[whNY] <- AllThree[whNY] + 2
-      whPM <- which(!is.na(predictedMap[]) & predictedMap[] > 0.006)
-      AllThree[whPM] <- AllThree[whPM] + 4
-      levels(AllThree) <- data.frame(ID = 1:7,
-                                     Label = c("LastYr", "NextYr", "LastAndNext", "PredYr", "LastYrAndPredYr", "NextYrAndPredYr", "LYRandNYandPY"))
-      setColors(AllThree) <- "Set2"
-      AllThree@legend@colortable[6] <- "red"
-
-      png(file.path("outputs", paste0("MPB_AnnualPrediction_", nams[i], ".png")), width = 5000, height = 1500, res = 300)
-      plot.new()
-      clearPlot()
-      Plot(currentAttacks, nextYearAttacks, predictedMap)
-      dev.off()
-      png(file.path("outputs", paste0("MPB_AnnualPrediction_All_", nams[i], ".png")), width = 5000, height = 5000, res = 300)
-      plot.new()
-      clearPlot()
-      Plot(AllThree)
-      dev.off()
-
-      message("Finished predicting yr ", nams[i],": ", format(st[3], format = "auto"), " seconds")
-    }
-  })
-  #########################################################
-  #########################################################
 
 
   nams <- names(massAttacksMap)
@@ -665,7 +779,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                         dirAvgs, distAvgs)
   dirAvgs <- as.data.table(dirAvgs, keep.rownames = "YearPair")
   names(dirAvgs) <-
-  names(diffs) <- nams[-length(nams)]
+    names(diffs) <- nams[-length(nams)]
   dev()
   clearPlot()
   Plot(diffs, visualSqueeze = 1)
@@ -760,7 +874,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
 objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
-                   quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel) {
+                   quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel,
+                   maxDistance) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
@@ -787,6 +902,9 @@ objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
     sdDist <- get("sdDist", envir = .GlobalEnv)
   if (missing(dispersalKernel))
     dispersalKernel <- get("dispersalKernel", envir = .GlobalEnv)
+  if (missing(maxDistance))
+    maxDistance <- get("maxDistance", envir = .GlobalEnv)
+
 
   if (fitType == "likelihood") {
     if (reps < 10) {
@@ -809,12 +927,13 @@ objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
   outBig <- purrr::pmap(
     .l = years,
     starts = starts,
-              #currentAttacks = mam[-length(mam)],
-              #atksRasNextYr = mam[-1]
+    #currentAttacks = mam[-length(mam)],
+    #atksRasNextYr = mam[-1]
     #startYears = startYears,
     #endYears = endYears,
     #starts = startsOuter,
     massAttacksMap = massAttacksMap,
+    maxDistance = maxDistance,
     #advDir = advectionDir,
     #advMag = advectionMag,
     p = p, reps = reps,
@@ -835,7 +954,8 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
                         massAttacksMap,
                         propPineMapInner, objFunValOnFail = 1e3,
                         # advDir, advMag,
-                        quotedSpread, fitType, omitPastPines) {
+                        quotedSpread, fitType, omitPastPines,
+                        maxDistance) {
   currentAttacks <- massAttacksMap[[startYears]]
 
   starts <- which(massAttacksMap[[startYears]][] > 0)
@@ -966,7 +1086,8 @@ spiralDistances <- function(pixelGroupMap, maxDis, cellSize) {
 }
 
 distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVec,
-                             propPineMapInner, asym, asymDir, meanDist, sdDist, dispersalKernel) {
+                             propPineMapInner, asym, asymDir, meanDist, sdDist, dispersalKernel,
+                             maxDistance) {
 
   if (asym > 0) {
     fromXY <- xyFromCell(propPineMapInner, fromCell)
@@ -1020,4 +1141,19 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVe
   # angle <- -30:30/10
   # plot(deg(angle), asym^sin(angle-rad(asymDir)))
   # plot(deg(angle), asym^cos(angle-rad(asymDir)))
+}
+
+aggregateRasByDT <- function(ras, newRas, fn = sum) {
+  whNonNA <- which(!is.na(ras[]))
+  rc2 <- rowColFromCell(ras, whNonNA)
+  if (!all(((res(newRas)/res(ras)) %% 1) == 0))
+    stop("The resolutions of the original raster and new raster are not integer multiples")
+  disaggregateFactor <- unique(res(newRas)/res(ras))
+  dt <- data.table(vals = ras[][whNonNA], ceiling(rc2 / disaggregateFactor))
+  dt2 <- dt[, list(vals = fn(vals)), by = c("row", "col")]
+  pixes <- cellFromRowCol(newRas, row = dt2$row, col = dt2$col)
+  newRasOut <- raster(newRas)
+  newRasOut[pixes] <- dt2$vals
+  newRasOut
+
 }
