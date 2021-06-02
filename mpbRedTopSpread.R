@@ -18,6 +18,7 @@ defineModule(sim, list(
                   "PredictiveEcology/SpaDES.core@development",
                   "PredictiveEcology/LandR@development", "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
+                  "PredictiveEcology/mpbutils (>= 0.1.2)",
                   "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
                   "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9021)"),
   parameters = rbind(
