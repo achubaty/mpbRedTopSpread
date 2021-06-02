@@ -85,6 +85,8 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                              massAttacksMap = sim$massAttacksMap,
                              currentAttacks = sim$currentAttacks,
                              params = P(sim),
+                             windMaps = sim$windMaps,
+                             rasterToMatch = sim$rasterToMatch,
                              bgSettlingProp = P(sim)$bgSettlingProp,
                              type = P(sim)$type,
                              currentTime = time(sim),
@@ -168,7 +170,8 @@ plotFn <- function(sim) {
 
 ### spread
 dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
-                       currentAttacks, params, currentTime, bgSettlingProp, type, reqdPkgs) {
+                       rasterToMatch, currentAttacks, params, currentTime, bgSettlingProp, type, reqdPkgs,
+                       windMaps) {
   ## check that MPB and pine rasters are the same resolution and ncells
   if (fromDisk(pineMap))
     pineMap[] <- pineMap[]
@@ -184,7 +187,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   if (mv > 1)
     propPineMap[] <- propPineMap[] / 100 ## much faster than calc; ## TODO: allow different params per species
 
-  nas <- is.na(propPineMap[])
+  nas <- is.na(propPineMap[]) & !is.na(rasterToMatch[])
   propPineMap[nas] <- 0
   if (exists("EliotTesting")) {
     EliotTesting <- TRUE
@@ -195,7 +198,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   } else {
     EliotTesting <- FALSE
   }
-  propPineMap[] <- pmin(1, propPineMap[] + bgSettlingProp) ## TODO: why divide by 100??
+  # propPineMap[] <- pmin(1, propPineMap[] + bgSettlingProp) ## TODO: why divide by 100??
 
   if (EliotTesting) { # TODO -- delete EliotTesting when no longer desired
     a <- extent(studyArea)
@@ -257,7 +260,9 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
       ))
   names(mams) <- names(massAttacksMap)
   massAttacksMap <- mams
+  browser()
   propPineMap <- pp <- Cache(aggregateRasByDT, propPineMap, rasCoarse, fn = mean)
+  windMaps <- Cache(aggregate, windMaps, res(rasCoarse)[1]/res(windMaps)[1])
 
 
   list2env(mget(objsToExport), envir = .GlobalEnv)
@@ -282,6 +287,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     quote({
       to <- raster::xyFromCell(atksRasNextYr, atksKnownNextYr$pixels)
       from <- raster::xyFromCell(atksRasNextYr, starts)
+      browser()
       out33 <- SpaDES.tools::distanceFromEachPoint(
         to = to,
         from = from,
@@ -294,8 +300,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
         dispersalKernel = dispersalKernel,
         asym = p[2],
         sdDist = p[4],
-        cl = min(8, parallel::detectCores()),
-        asymDir = rnorm(1, p[3], p[6]),
+        #cl = min(8, parallel::detectCores()),
+        asymDir = asymDir[],#rnorm(1, p[3], p[6]),
         meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
         maxDistance = maxDistance)
       return(out33)
@@ -887,7 +893,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
                    quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel,
-                   maxDistance) {
+                   maxDistance, windMaps) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
@@ -916,6 +922,8 @@ objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
     dispersalKernel <- get("dispersalKernel", envir = .GlobalEnv)
   if (missing(maxDistance))
     maxDistance <- get("maxDistance", envir = .GlobalEnv)
+  if (missing(windMaps))
+    windMaps <- get("windMaps", envir = .GlobalEnv)
 
 
   if (fitType == "likelihood") {
@@ -954,6 +962,7 @@ objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
     quotedSpread = quotedSpread,
     fitType = fitType,
     omitPastPines = omitPastPines,
+    windMaps = windMaps,
     .f = objFunInner
   )
 
@@ -967,8 +976,9 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
                         propPineMapInner, objFunValOnFail = 1e3,
                         # advDir, advMag,
                         quotedSpread, fitType, omitPastPines,
-                        maxDistance) {
+                        maxDistance, windMaps) {
   currentAttacks <- massAttacksMap[[startYears]]
+  asymDir <- windMaps[[startYears]]
 
   starts <- which(massAttacksMap[[startYears]][] > 0)
 
@@ -1115,6 +1125,10 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVe
   if (asym > 0) {
     fromXY <- xyFromCell(propPineMapInner, fromCell)
     toXYs <-  xyFromCell(propPineMapInner, toCells)
+    browser()
+    if (length(asymDir) > 1) {
+      asymDir <- asymDir[fromCell]
+    }
     advectionXY <- c(x = sin(rad(asymDir))*asym, y = cos(rad(asymDir))*asym)
     # neededXY <- toXYs - rep(advectionXY, each = NROW(toXYs))
 
