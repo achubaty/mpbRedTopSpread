@@ -271,13 +271,13 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   sdDist <- 1.2
   dispersalKernel <- "Weibull"
   # dispersalKernel <- "Exponential"
-  p <- do.call(c, params[c("meanDist", "advectionMag", "advectionDir")])
+  p <- do.call(c, params[c("meanDist", "advectionMag")])#, "advectionDir")])
   p["meanDist"] <- 1e4
   p["advectionMag"] <- 5e3
-  p["advectionDir"] <- 90
+  #p["advectionDir"] <- 90
   p["sdDist"] <- 1.2
   p["meanDistSD"] <- 20
-  p["advectionDirSD"] <- 20
+  #p["advectionDirSD"] <- 20
   lower <- c(25000,  3000,   0, 0.9, 1.001,  5)
   upper <- c(45000, 20000, 330, 2.5, 1.6, 30)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
@@ -324,7 +324,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   quotedSpread <- quote({
       to <- raster::xyFromCell(atksRasNextYr, atksKnownNextYr$pixels)
       from <- raster::xyFromCell(atksRasNextYr, starts)
-      browser()
       out33 <- SpaDES.tools::distanceFromEachPoint(
         to = to,
         from = from,
@@ -336,10 +335,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
         propPineMapInner = propPineMapInner,
         dispersalKernel = dispersalKernel,
         asym = p[2],
-        sdDist = p[4],
+        sdDist = p[3],# p[4], #when there was estimation for advectionDir == needed p[4]
         #cl = min(8, parallel::detectCores()),
         asymDir = asymDir[],#rnorm(1, p[3], p[6]),
-        meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
+        meanDist = rlnorm(1, log(p[[1]]), log(p[[4]])),#meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])), with estimating advectionDir
         maxDistance = maxDistance)
       return(out33)
   })
@@ -1046,7 +1045,7 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     # Rescale -- we are interested in the distribution, not the absolute values -- maybe?: TODO
     rescaler <- sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
     # likelihood
-    lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*rescaler, size = 10e-07, log = TRUE)
+    lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*rescaler, size = 0.1, log = TRUE)
     theInfs <- is.infinite(lll)
     if (any(theInfs)) {
       lowestProb <- min(lll[!theInfs])
@@ -1154,7 +1153,6 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVe
   if (asym > 0) {
     fromXY <- xyFromCell(propPineMapInner, fromCell)
     toXYs <-  xyFromCell(propPineMapInner, toCells)
-    browser()
     if (length(asymDir) > 1) {
       asymDir <- asymDir[fromCell]
     }
