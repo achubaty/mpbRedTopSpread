@@ -238,7 +238,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   upper <- c(45000, 20000, 330, 2.5, 1.6, 30)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
-  maxDistance <- 7e4
+  maxDistance <- 1e5
   fitType <- "distanceFromEachPoint"
   objsToExport <- setdiff(formalArgs("objFun"),
                           c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
@@ -293,7 +293,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
         dispersalKernel = dispersalKernel,
         asym = p[2],
         sdDist = p[4],
-        cl = min(8, parallel::detectCores()),
+        # cl = min(8, parallel::detectCores()),
         asymDir = rnorm(1, p[3], p[6]),
         meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
         maxDistance = maxDistance)
@@ -305,7 +305,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     fn <- ".allObjs.rda"
     numCoresNeeded <- 118
     clusterIPs <- clusterSetup(workers = ips, objects = mget(objsToExport),
-                               packages = reqdPkgs, libPaths = libPaths, doSpeedTest = FALSE, fn = fn,
+                               packages = reqdPkgs, libPaths = libPaths, doSpeedTest = TRUE, fn = fn,
                                numCoresNeeded = numCoresNeeded)
     message("Starting cluster with all cores per machine")
     cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
@@ -429,20 +429,24 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     #)
   } else if (isTRUE(type == "optim")) {
     browser()
-    # cl <- parallel::makeForkCluster(3)
-    optimOut <- optim(fn = objFun, par = p,
+    cl <- parallel::makeForkCluster(5)
+    stPre <- Sys.time()
+    optimOut <- optimParallel::optimParallel(fn = objFun, par = p,
                      lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
                      upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
                      reps = 1,
                      method = "L-BFGS-B",
                      quotedSpread = quotedSpread,
-                     control = list(trace = 3, factr = 1e2),
-                     #parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE),
+                     control = list(trace = 3, factr = 1e6),
+                     parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE),
                      #control = DEoptim.control(cluster = cl,
                     #                           strategy = 6,
                     #                           itermax = 120,
                     #                           NP = numCoresNeeded),
                      fitType = fitType)
+    saveRDS(optimOut, file = file.path("outputs", paste0("optimOut_", format(stPre), ".rds")))
+    stPost <- Sys.time()
+
   }
   browser()
   objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
@@ -1095,7 +1099,7 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     }
   }
   objFunVal <- -round(sum(objFunVal, na.rm = TRUE), 3) # negative so optimizer does minimize
-  message(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
+  # message(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
   return(objFunVal)
 }
 
@@ -1190,7 +1194,7 @@ aggregateRasByDT <- function(ras, newRas, fn = sum) {
 }
 
 clusterSetup <- function(workers, objectsToExport, packages,
-                         libPaths, doSpeedTest = FALSE, envir = parent.frame(),
+                         libPaths, doSpeedTest = TRUE, envir = parent.frame(),
                          fn = ".allObjs.rda", numCoresNeeded) {
   message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
   clSingle <- future::makeClusterPSOCK(workers = workers, revtunnel = TRUE)
