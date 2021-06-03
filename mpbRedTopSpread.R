@@ -1,3 +1,7 @@
+## package BioSIM not available on CRAN nor GitHub; needs to be installed as follows:
+## install.packages("https://sourceforge.net/projects/repiceasource/files/latest", repos = NULL,  type = "source")
+## install.packages("https://sourceforge.net/projects/biosimclient.mrnfforesttools.p/files/latest", repos = NULL,  type = "source")
+
 defineModule(sim, list(
   name = "mpbRedTopSpread",
   description = "Mountain Pine Beetle Red Top Growth Model: Short-run Potential for Establishment, Eruption, and Spread",
@@ -13,10 +17,12 @@ defineModule(sim, list(
   timeframe = as.POSIXlt(c(NA, NA)),
   timeunit = "year",
   citation = list(),
-  reqdPkgs = list("achubaty/amc@development", "CircStats", "data.table",
-                  "DEoptim", "EnvStats",
+  reqdPkgs = list("achubaty/amc@development",
+                  "BioSIM", ##  ## not on CRAN/GitHub; see install info at top of this file
+                  "CircStats", "data.table", "DEoptim", "EnvStats",
                   "PredictiveEcology/SpaDES.core@development",
-                  "PredictiveEcology/LandR@development", "parallelly",
+                  "PredictiveEcology/LandR@LCC2010 (>= 1.0.4)",
+                  "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
                   "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9021)"),
@@ -58,6 +64,9 @@ defineModule(sim, list(
                                     "canada-forests-attributes_attributs-forests-canada/",
                                     "2001-attributes_attributs-2001/",
                                     "NFI_MODIS250m_2001_kNN_Structure_Stand_Age_v1.tif")),
+    expectsInput("windMaps", "RasterStack",
+                 desc = "RasterStack of wind maps for every location in the study area",
+                 sourceURL = NA)
   ),
   outputObjects = bindrows(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees).")
@@ -141,6 +150,37 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
       userTags = c("stable", currentModule(sim)) ## TODO: does this need rasterToMatch? it IS rtm!
     )
     sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
+  }
+
+  if (!suppliedElsewhere("windMaps", sim)) {
+    aggFact <- P(sim)$aggFact
+
+    ## make coarser
+    aggRTM <- raster::raster(sim$rasterToMatch)
+    aggRTM <- raster::aggregate(aggRTM, fact = aggFact)
+    aggRTM <- LandR::aggregateRasByDT(sim$rasterToMatch, aggRTM, fn = mean)
+
+    dem <- Cache(prepInputsCanDEM,
+                 studyArea = sim$studyArea,
+                 rasterToMatch = aggRTM,
+                 destinationPath = inputPath(sim))
+
+    ## TODO: using "ClimaticWind_Annual"; use mean wind for summer [flight] months only
+    windStk <- LandR::BioSIM_getWind(
+      dem = dem,
+      years = P(sim)$years,
+      climModel = P(sim)$climateModel,
+      rcp = P(sim)$climateScenario
+    )
+
+    windMaps <- disaggregate(windStk, fact = aggFact)
+    sim$windMaps <- raster::stack(crop(windMaps, sim$rasterToMatch))  ## TODO: speed and dir??
+
+    if (!compareRaster(sim$windMaps, sim$rasterToMatch, stopiffalse = FALSE)) {
+      warning("wind raster is not same resolution as sim$rasterToMatch; please debug")
+      browser() ## TODO: remove
+    }
+
   }
 
   return(invisible(sim))
