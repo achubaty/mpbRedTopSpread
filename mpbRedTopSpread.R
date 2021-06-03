@@ -337,7 +337,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
       return(out33)
   })
 
-  ips <- c("localhost", "10.20.0.184", "10.20.0.97", "10.20.0.220", "10.20.0.217")
+  ips <- c("localhost", "10.20.0.184", "10.20.0.97", "10.20.0.220", "10.20.0.217") ## TODO: don't hardcode this. pass as param
   if (isTRUE(type == "fit")) {
     fn <- ".allObjs.rda"
     numCoresNeeded <- 118
