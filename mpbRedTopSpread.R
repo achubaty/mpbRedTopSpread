@@ -250,35 +250,32 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   rasTmplate <- raster(massAttacksMap)
   rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
   stt <- system.time(
-    mams <-
-      raster::stack(
+    mams <- raster::stack(
         lapply(unstack(massAttacksMap), function(mam) aggregateRasByDT(mam, rasCoarse, fn = sum))
       ))
   names(mams) <- names(massAttacksMap)
   massAttacksMap <- mams
   propPineMap <- pp <- Cache(aggregateRasByDT, propPineMap, rasCoarse, fn = mean)
 
-
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
-  quotedSpread <-
-    quote(SpaDES.tools::spread3(start = starts,
-                                rasQuality = propPineMapInner,
-                                rasAbundance = currentAttacks,
-                                advectionDir = rnorm(1, p[3], p[6]),
-                                advectionMag = p[2],
-                                meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
-                                sdDist = p[4],
-                                dispersalKernel = dispersalKernel,
-                                plot.it = FALSE,
-                                minNumAgents = minNumAgents,
-                                verbose = 0,
-                                skipChecks = TRUE,
-                                saveStack = NULL))
+  quotedSpread <- quote({
+    SpaDES.tools::spread3(start = starts,
+                          rasQuality = propPineMapInner,
+                          rasAbundance = currentAttacks,
+                          advectionDir = rnorm(1, p[3], p[6]),
+                          advectionMag = p[2],
+                          meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
+                          sdDist = p[4],
+                          dispersalKernel = dispersalKernel,
+                          plot.it = FALSE,
+                          minNumAgents = minNumAgents,
+                          verbose = 0,
+                          skipChecks = TRUE,
+                          saveStack = NULL)
+  })
 
-
-  quotedSpread <-
-    quote({
+  quotedSpread <- quote({
       to <- raster::xyFromCell(atksRasNextYr, atksKnownNextYr$pixels)
       from <- raster::xyFromCell(atksRasNextYr, starts)
       out33 <- SpaDES.tools::distanceFromEachPoint(
@@ -298,7 +295,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
         meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
         maxDistance = maxDistance)
       return(out33)
-    })
+  })
 
   ips <- c("localhost", "10.20.0.184", "10.20.0.97", "10.20.0.220", "10.20.0.217")
   if (isTRUE(type == "fit")) {
@@ -423,8 +420,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
   } else if (isTRUE(type == "runOnce")) {
     #profvis::profvis(
-      st1 <- system.time(out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
-                    massAttacksMap = massAttacksMap))
+      st1 <- system.time({
+        out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
+                      massAttacksMap = massAttacksMap)
+      })
       print(st1)
     #)
   } else if (isTRUE(type == "optim")) {
@@ -467,13 +466,12 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     mn <- (meanDist)
     sd <- mn/sdDist # 0.8 to 2.0 range
     shape <- (sd/mn)^(-1.086)
-    scale <- mn/exp(lgamma(1+1/shape))
+    scale <- mn/exp(lgamma(1 + 1/shape))
 
     ww <- rweibull(1e4, shape = shape, scale = scale)
     hist(ww, xlim = c(0, 14e4), main = "", xlab = "Distance (m) from source")
     abline(v = meanDist, col = "red")
     abline(v = p[[1]], col = "green")
-
   }
 
   #########################################################
@@ -797,31 +795,25 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
   # Average direction
 
-
   mn <- (meanDist + advectionMagTmp)
   sd <- mn/sdDist # 0.8 to 2.0 range
   shape <- (sd/mn)^(-1.086)
-  scale <- mn/exp(lgamma(1+1/shape))
+  scale <- mn/exp(lgamma(1 + 1/shape))
   aa <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)
 
   mn <- max(10, (meanDist - advectionMagTmp))
   sd <- mn/sdDist # 0.8 to 2.0 range
   shape <- (sd/mn)^(-1.086)
-  scale <- mn/exp(lgamma(1+1/shape))
+  scale <- mn/exp(lgamma(1 + 1/shape))
   bb <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)
   clearPlot()
   Plot(aa$x, aa$y, addTo = "Kernel_with_wind", type = "l")
   Plot(bb$x, bb$y, addTo = "Kernel_without_wind", type = "l")
 
-
-
   ## sum negative log likelihood for attacked pixels
-
 
   ## TODO: something other than simple sum of squares?
   #  metric <- (atkAreaData - atkAreaSim)^2 #+ (SNLL / 10^3)
-
-
 
   if (isTRUE(!is.na(params$.plotInitialTime))) {
 
@@ -1012,9 +1004,6 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
     objFunVal <- lll
 
   } else {
-
-
-
     # Remove pixels that had already been attacked in the past -- emulating MPB Suppression efforts
     if (omitPastPines)
       atksKnownNextYr <- atksKnownNextYr[!massAttacksDTYearsToPres, on = "pixels"]
@@ -1216,14 +1205,14 @@ clusterSetup <- function(workers, objectsToExport, packages,
   out2 <- rbindlist(out, idcol = TRUE)
   relSpeed <- 1/out2$elapsed*numCoresNeeded
   ord <- order(relSpeed)
-  out2[, relSpeed:= relSpeed]
-  out2[, rank:= rank(-relSpeed)]
+  out2[, relSpeed := relSpeed]
+  out2[, rank := rank(-relSpeed)]
   nonHTcores <- out2$cores/2
-  out2[, nonHTcores:= nonHTcores]
+  out2[, nonHTcores := nonHTcores]
   sumNonHTcores <- sum(nonHTcores)
   needHTcores <- numCoresNeeded - sumNonHTcores
   for (i in seq_along(workers)) {
-    out2[rank == i, cores:= nonHTcores + round(needHTcores/2^i)]
+    out2[rank == i, cores := nonHTcores + round(needHTcores/2^i)]
   }
   m <- 0
   while (sum(out2$cores) < numCoresNeeded) {
