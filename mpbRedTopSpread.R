@@ -26,7 +26,7 @@ defineModule(sim, list(
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "PredictiveEcology/mpbutils (>= 0.1.2)",
                   "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
-                  "PredictiveEcology/SpaDES.tools@spread3 (>= 0.3.7.9021)"),
+                  "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)"),
   parameters = rbind(
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
