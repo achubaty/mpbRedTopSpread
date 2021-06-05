@@ -280,8 +280,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   #p["advectionDirSD"] <- 20
   #lower <- c(25000,  3000,   0, 0.9, 1.001,  5)
   #upper <- c(45000, 20000, 330, 2.5, 1.6, 30)
-  lower <- c(25000,  1000,  0.9, 1.001)
-  upper <- c(65000, 20000, 2.5, 1.6)
+  lower <- c(25000,  500,  0.9, 1.001)
+  upper <- c(65000, 20000, 2.5, 1.7)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
   maxDistance <- 1e5
@@ -344,8 +344,10 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
       return(out33)
   })
 
-  ips <- c("localhost", "10.20.0.184", "10.20.0.97", "10.20.0.220", "10.20.0.217") ## TODO: don't hardcode this. pass as param
-  adjustments <- c(1.5, 1, 0.8, 0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
+  ips <- c("localhost", "10.20.0.184", #"10.20.0.97",
+           "10.20.0.220", "10.20.0.217") ## TODO: don't hardcode this. pass as param
+  adjustments <- c(1.5, 1, #0.8,
+                   0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
   if (isTRUE(type == "fit")) {
     fn <- ".allObjs.rda"
     numCoresNeeded <- 118
@@ -375,7 +377,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     }))
 
     message("Starting DEoptim")
-    browser()
     stPre <- Sys.time()
     DEout <- DEoptim(fn = objFun,
                      lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
@@ -390,17 +391,16 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
     saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
     stPost <- Sys.time()
-    browser()
     print(difftime(stPost, stPre))
+    browser()
 
   } else if (isTRUE(type == "runOnce")) {
-    browser()
-    profvis::profvis(
+    #profvis::profvis(
       st1 <- system.time({
         out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
                       massAttacksMap = massAttacksMap[[1:2]])
       })
-    )
+    #)
     print(st1)
   } else if (isTRUE(type == "optim")) {
     browser()
@@ -970,7 +970,6 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
 
   env <- environment()
 
-  browser()
   out <- lapply(seq_len(reps), function(rep) as.data.table(eval(quotedSpread, envir = env)))
   out <- rbindlist(out, idcol = "rep")
 
