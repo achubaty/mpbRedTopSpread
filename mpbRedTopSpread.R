@@ -346,11 +346,11 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
   ips <- c("localhost", "10.20.0.184", #"10.20.0.97",
            "10.20.0.220", "10.20.0.217") ## TODO: don't hardcode this. pass as param
-  adjustments <- c(1.5, 1, #0.8,
+  adjustments <- c(1.25, 1.1, #0.8,
                    0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
   if (isTRUE(type == "fit")) {
     fn <- ".allObjs.rda"
-    numCoresNeeded <- 118
+    numCoresNeeded <- 100
     reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table")), reqdPkgs, value = TRUE)
     clusterIPs <- clusterSetup(workers = ips, objects = mget(objsToExport),
                                packages = reqdPkgs, libPaths = libPaths, doSpeedTest = TRUE, fn = fn,
@@ -440,7 +440,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 
   par(mfrow = c(3,4))
   for (i in 1:10) {
-    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
+    meanDist = rlnorm(1, log(p[[1]]), log(p[[4]]))
     sdDist = p[4]
 
     mn <- (meanDist)
@@ -1258,4 +1258,12 @@ hist.DEoptim <- function(DEobj, paramNames) {
     theme_bw()
 
   gg
+}
+
+summary.DEoptim <- function(DEobj, title) {
+  if (!missing(title))
+    cat(paste(title, "\n"))
+  cat(paste("Likelihood: ", round(DEobj$optim$bestval, 0), "\n"))
+  cat(paste("Mean params: ", paste(round(apply(DEobj$member$pop, 2, mean), 2), collapse = ", "), "\n"))
+  cat(paste("Best params: ", paste(round(DEobj$optim$bestmem, 2), collapse = ", "), "\n"))
 }
