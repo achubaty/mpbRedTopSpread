@@ -24,7 +24,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@LCC2010 (>= 1.0.4)",
                   "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
-                  "PredictiveEcology/mpbutils (>= 0.1.2)",
+                  "PredictiveEcology/mpbutils (>= 0.1.2)", "purrr",
                   "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)"),
   parameters = rbind(
@@ -95,6 +95,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                              currentAttacks = sim$currentAttacks,
                              params = P(sim),
                              windMaps = sim$windMaps,
+                             windSpeedMaps = sim$windSpeedMaps,
                              rasterToMatch = sim$rasterToMatch,
                              bgSettlingProp = P(sim)$bgSettlingProp,
                              type = P(sim)$type,
@@ -211,7 +212,7 @@ plotFn <- function(sim) {
 ### spread
 dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                        rasterToMatch, currentAttacks, params, currentTime, bgSettlingProp, type, reqdPkgs,
-                       windMaps) {
+                       windMaps, windSpeedMaps) {
   ## check that MPB and pine rasters are the same resolution and ncells
   if (fromDisk(pineMap))
     pineMap[] <- pineMap[]
@@ -280,8 +281,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   #p["advectionDirSD"] <- 20
   #lower <- c(25000,  3000,   0, 0.9, 1.001,  5)
   #upper <- c(45000, 20000, 330, 2.5, 1.6, 30)
-  lower <- c(25000,  500,  0.9, 1.001)
-  upper <- c(65000, 20000, 2.5, 1.7)
+  lower <- c(25000,  50,  0.9, 1.001)
+  upper <- c(65000, 2000, 2.5, 1.7)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
   maxDistance <- 1e5
@@ -303,6 +304,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
   massAttacksMap <- mams
   propPineMap <- pp <- Cache(aggregateRasByDT, propPineMap, rasCoarse, fn = mean)
   windMaps <- Cache(aggregate, windMaps, res(rasCoarse)[1]/res(windMaps)[1])
+  windSpeedMaps <- Cache(aggregate, windSpeedMaps, res(rasCoarse)[1]/res(windSpeedMaps)[1])
 
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
@@ -335,10 +337,11 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
         nextYrVec = atksRasNextYr[],
         propPineMapInner = propPineMapInner,
         dispersalKernel = dispersalKernel,
-        asym = p[2],
+        asymParam = p[2],
         sdDist = p[3],# p[4], # when there was estimation for advectionDir == needed p[4]
         #cl = min(8, parallel::detectCores()),
-        asymDir = asymDir[],#rnorm(1, p[3], p[6]),
+        windDir = windDir[],#rnorm(1, p[3], p[6]),
+        windSpeedMap = windSpeedMap[],
         meanDist = rlnorm(1, log(p[[1]]), log(p[4])),#meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])), with estimating advectionDir
         maxDistance = maxDistance)
       return(out33)
@@ -348,11 +351,14 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
            "10.20.0.220", "10.20.0.217") ## TODO: don't hardcode this. pass as param
   adjustments <- c(1.25, 1.1, #0.8,
                    0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
+  ips <- c("10.20.0.106", "10.20.0.68", "10.20.0.213")
+  adjustments = 1
   if (isTRUE(type == "fit")) {
     fn <- ".allObjs.rda"
-    numCoresNeeded <- 100
-    reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table")), reqdPkgs, value = TRUE)
-    clusterIPs <- clusterSetup(workers = ips, objects = mget(objsToExport),
+    numCoresNeeded <- 20
+    reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table", "purrr")), reqdPkgs, value = TRUE)
+    browser()
+    clusterIPs <- clusterSetup(workers = ips, objsToExport = objsToExport,
                                packages = reqdPkgs, libPaths = libPaths, doSpeedTest = TRUE, fn = fn,
                                numCoresNeeded = numCoresNeeded, adjustments = adjustments)
     message("Starting cluster with all cores per machine")
@@ -550,14 +556,14 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
     meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
-    asymDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
+    windDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
     print("aaa")
     dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
                            propPineMapInner = r, fromCell = mid,
                            toCells = toCells,
-                           asym = p["advectionMag"], angle = ddd[, "angles"],
-                           asymDir = asymDir)
+                           asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                           windDir = windDir)
     abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
     plot(abund)
 
@@ -572,8 +578,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                             meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
                             propPineMapInner = r, fromCell = mid,
                             toCells = toCells,
-                            asym = p["advectionMag"], angle = ddd[, "angles"],
-                            asymDir = asymDir)
+                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            windDir = windDir)
     abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
     plot(abund)
 
@@ -588,8 +594,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                             meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
                             propPineMapInner = r, fromCell = mid,
                             toCells = toCells,
-                            asym = p["advectionMag"], angle = ddd[, "angles"],
-                            asymDir =  asymDir)
+                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            windDir =  windDir)
     abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
     plot(abund)
     a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
@@ -627,13 +633,13 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
     meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
-    asymDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
+    windDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
     dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
                            propPineMapInner = r, fromCell = mid,
                            toCells = toCells,
-                           asym = p["advectionMag"], angle = ddd[, "angles"],
-                           asymDir = asymDir)
+                           asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                           windDir = windDir)
     abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
     plot(abund)
 
@@ -648,8 +654,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                             meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
                             propPineMapInner = r, fromCell = mid,
                             toCells = toCells,
-                            asym = p["advectionMag"], angle = ddd[, "angles"],
-                            asymDir = asymDir)
+                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            windDir = windDir)
     abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
     plot(abund)
 
@@ -664,8 +670,8 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
                             meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
                             propPineMapInner = r, fromCell = mid,
                             toCells = toCells,
-                            asym = p["advectionMag"], angle = ddd[, "angles"],
-                            asymDir =  asymDir)
+                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            windDir =  windDir)
     abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
     plot(abund)
     a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
@@ -858,7 +864,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksMap,
 objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
                    minNumAgents, massAttacksMap, currentTime, reps = 10,
                    quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel,
-                   maxDistance, windMaps) {
+                   maxDistance, windMaps, windSpeedMaps) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
@@ -889,7 +895,8 @@ objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
     maxDistance <- get("maxDistance", envir = .GlobalEnv)
   if (missing(windMaps))
     windMaps <- get("windMaps", envir = .GlobalEnv)
-
+  if (missing(windSpeedMaps))
+    windSpeedMaps <- get("windSpeedMaps", envir = .GlobalEnv)
 
   if (fitType == "likelihood") {
     if (reps < 10) {
@@ -928,6 +935,7 @@ objFun <- function(p, propPineMap, currentAttacks, advectionDir, advectionMag,
     fitType = fitType,
     omitPastPines = omitPastPines,
     windMaps = windMaps,
+    windSpeedMaps = windSpeedMaps,
     .f = objFunInner
   )
 
@@ -941,9 +949,10 @@ objFunInner <- function(reps, starts, startYears, endYears, p, minNumAgents,
                         propPineMapInner, objFunValOnFail = 1e3,
                         # advDir, advMag,
                         quotedSpread, fitType, omitPastPines,
-                        maxDistance, windMaps) {
+                        maxDistance, windMaps, windSpeedMaps) {
   currentAttacks <- massAttacksMap[[startYears]]
-  asymDir <- windMaps[[startYears]]
+  windDir <- windMaps[[startYears]]
+  windSpeedMap <- windSpeedMaps[[startYears]]
 
   starts <- which(massAttacksMap[[startYears]][] > 0)
 
@@ -1081,16 +1090,17 @@ spiralDistances <- function(pixelGroupMap, maxDis, cellSize) {
 }
 
 distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVec,
-                             propPineMapInner, asym, asymDir, meanDist, sdDist, dispersalKernel,
-                             maxDistance) {
+                             propPineMapInner, asymParam, windDir, meanDist, sdDist,
+                             dispersalKernel, maxDistance, windSpeedMap) {
 
-  if (asym > 0) {
+  if (asymParam > 0) {
     fromXY <- xyFromCell(propPineMapInner, fromCell)
     toXYs <-  xyFromCell(propPineMapInner, toCells)
-    if (length(asymDir) > 1) {
-      asymDir <- asymDir[fromCell]
+    if (length(windDir) > 1) {
+      windDir <- windDir[fromCell]
+      windSpeed <- windSpeedMap[fromCell]
     }
-    advectionXY <- c(x = sin(rad(asymDir))*asym, y = cos(rad(asymDir))*asym)
+    advectionXY <- c(x = sin(rad(windDir))*asymParam*windSpeed, y = cos(rad(windDir))*asymParam*windSpeed)
     # neededXY <- toXYs - rep(advectionXY, each = NROW(toXYs))
 
     # x <- numeric(NROW(toXYs))
@@ -1145,8 +1155,8 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, nextYrVe
 
   # if (any(is.infinite(out1))) browser()
   # angle <- -30:30/10
-  # plot(deg(angle), asym^sin(angle-rad(asymDir)))
-  # plot(deg(angle), asym^cos(angle-rad(asymDir)))
+  # plot(deg(angle), asymParam^sin(angle-rad(windDir)))
+  # plot(deg(angle), asymParam^cos(angle-rad(windDir)))
   return(prob1)
 }
 
@@ -1165,7 +1175,7 @@ aggregateRasByDT <- function(ras, newRas, fn = sum) {
 
 }
 
-clusterSetup <- function(workers, objectsToExport, packages,
+clusterSetup <- function(workers, objsToExport, packages,
                          libPaths, doSpeedTest = FALSE, envir = parent.frame(),
                          fn = ".allObjs.rda", numCoresNeeded, adjustments = rep(1, length(workers))) {
   message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
@@ -1197,16 +1207,38 @@ clusterSetup <- function(workers, objectsToExport, packages,
   nonHTcores <- out2$cores/2
   out2[, nonHTcores := nonHTcores]
   sumNonHTcores <- sum(nonHTcores)
-  needHTcores <- numCoresNeeded - sumNonHTcores
+  needHTcores <- max(numCoresNeeded, numCoresNeeded - sumNonHTcores)
   for (i in seq_along(workers)) {
     out2[rank == i, cores := nonHTcores + round(needHTcores/2^i)]
   }
   out2[, cores := round(cores * adjustments / max(adjustments))]
+
+  # Increase ncores upwards
   m <- 0
   while (sum(out2$cores) < numCoresNeeded) {
-    m <- ((m + 1) - 1) %% NROW(out2)  + 1
+    m <- ((m + 1) - 1) %% NROW(out2) + 1
     out2[m, cores := cores + 1]
   }
+  # Decrease down to 1 each
+  m <- 0
+  set(out2, NULL, "cores", as.numeric(out2$cores))
+  while ((sum(floor(out2$cores)) > numCoresNeeded) && any(out2$cores > 1)) {
+    m <- ((m + 1) - 1) %% NROW(out2) + 1
+    if (out2[m,]$cores > 1) {
+      maxC <- max(out2$cores)
+      out2[m, cores := cores - cores/maxC]
+    }
+  }
+  set(out2, NULL, "cores", floor(out2$cores))
+  # Decrease down to 0 or 1 each
+  m <- 0
+  while (sum(out2$cores) > numCoresNeeded && any(out2$cores > 0)) {
+    m <- ((m + 1) - 1) %% NROW(out2) + 1
+    if (out2[m,]$cores > 0) {
+      out2[m, cores := cores - 1]
+    }
+  }
+
   reproducible::messageDF(out2)
 
   clusterIPs <- rep(out2$.id, out2$cores)
@@ -1214,7 +1246,7 @@ clusterSetup <- function(workers, objectsToExport, packages,
 
   # clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
   clusterExport(clSingle, varlist = objsToExport, envir = envir)
-  clusterExport(clSingle, varlist = c("fn", "packages"), envir = environment())
+  clusterExport(clSingle, varlist = c("fn", "packages", "libPaths", "objsToExport"), envir = environment())
   clusterEvalQ(clSingle, {
     if (any(!dir.exists(libPaths)))
       dir.create(libPaths[1], recursive = TRUE)
@@ -1245,8 +1277,14 @@ clusterSetup <- function(workers, objectsToExport, packages,
     save(list = objsToExport, file = fn)
   })
   parallel::stopCluster(clSingle)
-  return(clusterIPs)
+  # return(clusterIPs)
+  browser()
+  clOut <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
+  return(clOut)
 }
+
+# clOut= clusterSetup(workers = ips[1], numCoresNeeded = 1,
+#                     objsToExport = c("ips"), packages = "reproducible", libPaths= .libPaths()[1])
 
 hist.DEoptim <- function(DEobj, paramNames) {
   dt <- as.data.table(DEobj$member$pop)
