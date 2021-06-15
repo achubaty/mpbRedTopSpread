@@ -20,7 +20,7 @@ defineModule(sim, list(
   reqdPkgs = list("achubaty/amc@development",
                   "BioSIM", ##  ## not on CRAN/GitHub; see install info at top of this file
                   "CircStats", "data.table", "DEoptim", "EnvStats",
-                  "PredictiveEcology/SpaDES.core@development",
+                  "SpaDES.core (>= 1.0.8)",
                   "PredictiveEcology/LandR@LCC2010 (>= 1.0.4)",
                   "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
@@ -28,6 +28,8 @@ defineModule(sim, list(
                   "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)"),
   parameters = rbind(
+    defineParameter("dataset", "character", "Boone2011", NA, NA, "Which dataset to use for stand dynamic model fitting. One of 'Boone2011' (default), 'Berryman1979_fit', or 'Berryman1979_forced'. Others to be implemented later."),
+    defineParameter("growthInterval", "numeric", 1, NA, NA, "This describes the interval time between growth events"),
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
     defineParameter("advectionMag", "numeric", 1000, NA, NA,
@@ -36,6 +38,8 @@ defineModule(sim, list(
                     "The proportion of beetles that settle from those that could potentially settle, even if no pine"),
     defineParameter("meanDist", "numeric", 1000, NA, NA,
                     "Expected dispersal distance (m); ~63% go less than this distance"),
+    defineParameter("quotedSpread", "language", NULL, NA, NA,
+                    "A spread function that is contained within a quote(). If left at NULL or NA, it will use the module version"),
     defineParameter("type", "character", "fit", NA, NA,
                     "Expected dispersal distance (m); ~63% go less than this distance"),
     defineParameter(".plotInitialTime", "numeric", NA, NA, NA,
@@ -50,6 +54,8 @@ defineModule(sim, list(
                     "Should this entire module be run with caching activated?")
   ),
   inputObjects = bindrows(
+    expectsInput("climateSuitabilityMaps", "RasterStack",
+                 "A time series of climatic suitablity RasterLayers, each with previx 'X' and the year, e.g., 'X2010'"),
     # expectsInput("massAttacksRas", "RasterLayer",
     #              desc = "Current MPB attack map (number of red attacked trees).",
     #              sourceURL = NA),
@@ -59,6 +65,7 @@ defineModule(sim, list(
     expectsInput("massAttacksDT", "data.table",
                  desc = "Current MPB attack map (number of red attacked trees).",
                  sourceURL = NA),
+    expectsInput("pineMap", "RasterLayer", "Percent cover maps by species (lodgepole and jack pine)."),
     expectsInput("rasterToMatch", "RasterLayer",
                  desc = "if not supplied, will default to standAgeMap", # TODO: description needed
                  sourceURL = NA),
@@ -73,7 +80,10 @@ defineModule(sim, list(
                  sourceURL = NA)
   ),
   outputObjects = bindrows(
-    createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees).")
+    createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
+    createsOutput("propPineRas", "RasterLayer",
+                  paste("Proportion (not percent) cover map of *all* pine. This will",
+                  " be the pixel-based sum if there are more than one layer")),
   )
 ))
 
@@ -87,12 +97,22 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- Init(sim)
 
            # schedule future event(s)
+           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "grow", eventPriority = 4.5)
            sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
            sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", .last() - 1)
            sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save", .last())
          },
+         "grow" = {
+           # do stuff for this event
+           sim <- grow(sim)
+
+           # schedule future event(s)
+           ## growth needs to happen after spread:
+           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "grow", eventPriority = 5.5)
+         },
          "dispersal" = {
-           out <- dispersal2(pineMap = sim$pineMap, studyArea = sim$studyArea,
+           out <- dispersal2(quotedSpread <- P(sim)$quotedSpread,
+                             pineMap = sim$pineMap, studyArea = sim$studyArea,
                              massAttacksDT = sim$massAttacksDT,
                              massAttacksStack = sim$massAttacksStack,
                              # massAttacksRas = sim$massAttacksRas,
@@ -105,8 +125,9 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                              currentTime = time(sim),
                              reqdPkgs = reqdPkgs(module = currentModule(sim), modulePath = modulePath(sim))[[currentModule(sim)]]
            )
+           sim$plotStack <- out
            # sim <- dispersal(sim)
-           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
+           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
          },
          "plot" = {
            sim <- plotFn(sim)
@@ -199,6 +220,168 @@ Init <- function(sim) {
   if (!isTRUE(cr))
     stop("Rasters sim$rasterToMatch, sim$massAttacksStack, sim$pineMap must all have same metadata; they do not")
 
+
+  # AGGREGATE FROM HERE
+  if (fromDisk(sim$pineMap))
+    sim$pineMap[] <- sim$pineMap[]
+
+  ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
+  MAXTREES <- 1125 * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
+
+  ## asymmetric spread (biased eastward)
+  # lodgepole pine and jack pine together
+  propPineRas <- if (nlayers(sim$pineMap) > 1) sum(sim$pineMap) else sim$pineMap
+  mv <- maxValue(propPineRas)
+
+  if (mv > 1)
+    propPineRas[] <- propPineRas[] / 100 ## much faster than calc; ## TODO: allow different params per species
+
+  nas <- is.na(propPineRas[]) & !is.na(sim$rasterToMatch[])
+  propPineRas[nas] <- 0
+
+
+  nams <- names(sim$massAttacksStack)
+  rasTmplate <- raster(sim$massAttacksStack)
+  rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
+  massAttacksList <- raster::unstack(sim$massAttacksStack)
+  opts <- options(reproducible.cacheSpeed = "fast")
+  on.exit(options(opts))
+  mams <- raster::stack(
+    Cache(lapply, massAttacksList, function(mam)
+      aggregateRasByDT(mam, rasCoarse, fn = sum))
+  )
+  names(mams) <- names(sim$massAttacksStack)
+  sim$massAttacksStack <- mams
+  sim$propPineRas <- Cache(aggregateRasByDT, propPineRas, rasCoarse, fn = mean)
+  sim$windDirStack <- Cache(aggregate, sim$windDirStack, res(rasCoarse)[1]/res(sim$windDirStack)[1])
+  sim$windSpeedStack <- Cache(aggregate, sim$windSpeedStack, res(rasCoarse)[1]/res(sim$windSpeedStack)[1])
+  resRatio <- res(rasCoarse)[1]/res(sim$climateSuitabilityMaps)[1]
+  if (resRatio < 1) {
+    climateSuitabilityMaps <- Cache(disaggregate, sim$climateSuitabilityMaps, fact = 10)
+    climateSuitabilityMaps <- raster::stack(crop(climateSuitabilityMaps, sim$massAttacksStack))
+    sim$climateSuitabilityMaps <- climateSuitabilityMaps
+  }
+  if (!compareRaster(sim$massAttacksStack,
+                sim$propPineRas,
+                sim$windDirStack,
+                sim$windSpeedStack,
+                sim$climateSuitabilityMaps))
+    stop("The coarser resolution files need to be all the same resolution")
+
+  options(opts)
+  ## create a data.table consisting of the reduced map of current MPB distribution,
+  ## proportion pine, and climatic suitability;
+  ## use only the start year's non-zero and non-NA data
+  ids <- sim$massAttacksStack[]
+  ids <- which(ids > 0, arr.ind = TRUE)
+  mpb.sp <- raster::xyFromCell(sim$massAttacksStack, cell = ids[, "row"])
+  # crs(mpb.sp) <- crs(sim$massAttacksStack)
+  sim$massAttacksDT <- as.data.table(ids)
+  setnames(sim$massAttacksDT, old = c("row", "col"), new = c("pixel", "layerNum"))
+  sim$massAttacksDT <- data.table(sim$massAttacksDT, mpb.sp)
+
+  sim$massAttacksDT[, layerName := names(sim$massAttacksStack)[layerNum]]
+  sim$massAttacksDT[, `:=`(
+    CLIMATE = raster::extract(sim$climateSuitabilityMaps[[.BY[[1]]]], cbind(x, y)),
+    ATKTREES = raster::extract(sim$massAttacksStack[[.BY[[1]]]], cbind(x, y))#,
+    #windSpeed = raster::extract(sim$windSpeedStack[[.BY[[1]]]], cbind(x, y)),
+    #windDir = raster::extract(sim$windDirStack[[.BY[[1]]]], cbind(x, y)),
+    #propPineRas = raster::extract(sim$propPineRas, cbind(x, y))
+    ),
+    by = "layerName"]
+
+  # ids <- which(!is.na(sim$currentAttacks[]) | (sim$currentAttacks[] > 0))
+  # mpb.sp <- raster::xyFromCell(sim$currentAttacks, cell = ids)
+# sim$massAttacksDT <- data.table(
+  #   ID = ids[, "row"],
+  #   layer = ids[, "col"],
+  #   #X = mpb.sp[, 1],
+  #   #Y = mpb.sp[, 2],
+  #   ATKTREES = sim$massAttacksStack[ids[, "row"]],
+  #   CLIMATE = raster::extract(sim$climateSuitabilityMaps, mpb.sp)
+  # )
+
+  ## growth data
+  mod$growthData <- switch(P(sim)$dataset,
+                           "Berryman1979_fit" = {
+                             ## Berryman1979_forced
+                             data.frame(
+                               year = c(1:15),
+                               log10Xtm1 = c(-3.1, -2.75, -2.7, -2.4, -2.3, -1.2, -1, 0.2, 0.9, 0.65,
+                                             1.05, 0.95, 1.1, 1.5, 1.85),
+                               log10Rt = c(0.35, 0.4, 0.1, -0.4, -0.65, 0.3, 1, 0.75, 1.2, -0.7,
+                                           -0.4, 0.2, 0.45, 0.3, -0.78),
+                               study = c(rep("Tunnock 1970", 9), rep("Parker 1973", 6)),
+                               stringsAsFactors = TRUE
+                             )
+                           },
+                           "Berryman1979_forced" = {
+                             ## same as Berryman1979_fit
+                             data.frame(
+                               year = c(1:15),
+                               log10Xtm1 = c(-3.1, -2.75, -2.7, -2.4, -2.3, -1.2, -1, 0.2, 0.9, 0.65,
+                                             1.05, 0.95, 1.1, 1.5, 1.85),
+                               log10Rt = c(0.35, 0.4, 0.1, -0.4, -0.65, 0.3, 1, 0.75, 1.2, -0.7,
+                                           -0.4, 0.2, 0.45, 0.3, -0.78),
+                               study = c(rep("Tunnock 1970", 9), rep("Parker 1973", 6)),
+                               stringsAsFactors = TRUE
+                             )
+                           },
+                           "Boone2011" = {
+                             data <- read.csv(file.path(dataPath(sim), "BooneCurveData2.csv"))
+                             data$Site <- c(rep("A", 6), rep("B", 6), rep("D", 5), rep("E", 4), rep("F", 4), rep("G", 3))
+                             data$Year <- c(2000:2005, 2000:2005, 2001:2005, 2002:2005, 2002:2005, 2003:2005)
+                             data
+                           }
+  )
+
+  ## define growth function (from regression) for each dataset
+  # mod$growthFunction <- switch(P(sim)$dataset,
+  #    "Berryman1979_fit" = {
+  #      function(x, s) {
+  #        # TODO: check this works
+  #        m <- lm(log10Rt ~ poly(log10Xtm1, 3, raw = TRUE), data = mod$growthData)
+  #        s * unname(predict(m, newdata = data.frame(log10Xtm1 = x)))
+  #      }
+  #    },
+  #    "Berryman1979_forced" = {
+  #      function(x, s) {
+  #        # TODO: check this works
+  #        poly3.params <- c(1.1, -0.2, -0.9, -0.24)
+  #        s * (poly3.params[4] * x^3 + poly3.params[3] * x^2 + poly3.params[2] * x + poly3.params[1])
+  #      }
+  #    },
+  #    "Boone2011" = {
+  #      function(x, s) {
+  #        ## x is number of attacked trees (ATKTREES)
+  #        ## s is scaling parameter (0,1), based on climate (CLIMATE)
+  #
+  #        ## mortality from emigration/dispersal
+  #        # r: relative stocking value (0,1)
+  #        # d: slope parameter [1,Inf)
+  #        # s: scaling parameter (0,1)
+  #        m_e <- function(r, d, s) {
+  #          s * exp(1 - d * r)
+  #        }
+  #
+  #        # use 2004 data as baseline for unweakened hosts (i.e., a good year for trees)
+  #        m <- lm(amc::logit(PropKilled) ~ log(Attacked), data = subset(mod$growthData, Year == "2004"))
+  #        a <- 0.85            ## a: slope parameter, how quickly the curve drops off
+  #        d <- 3               ## d: slope parameter [1,Inf)
+  #        r <- 0.2             ## r: relative stocking value (0,1) ## TODO: link this to stand depletion
+  #                             ## s: scaling parameter (0,1) -- provided by climate suitability map
+  #        yint2 <- 0.9         ## from MacQuarrie 2011 (Fig 3d); TODO: extract from raw data
+  #        yint <- yint2 + 0.3  ## somewhat arbitrary; chosen so that the resulting curve passes 1 when flexed
+  #
+  #        # resulting function
+  #        log(amc::hill(m$coefficients[[1]], m$coefficients[[2]], exp(a * x))) +
+  #          (yint - m_e(r, d, s) - 0.03 * exp(a * x))
+  #        }
+  #    }
+  # )
+  # ! ----- STOP EDITING ----- ! #
+
+
   return(invisible(sim))
 }
 
@@ -213,66 +396,33 @@ plotFn <- function(sim) {
 }
 
 ### spread
-dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksStack,
+dispersal2 <- function(quotedSpread, pineMap, studyArea, massAttacksDT, massAttacksStack,
                        rasterToMatch, # massAttacksRas,
                        params, currentTime, bgSettlingProp, type, reqdPkgs,
                        windDirStack, windSpeedStack) {
+
   ## check that MPB and pine rasters are the same resolution and ncells
-  if (fromDisk(pineMap))
-    pineMap[] <- pineMap[]
-
-  ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
-  MAXTREES <- 1125 * prod(res(pineMap)) / 100^2 ## TODO: round this?
-
-  ## asymmetric spread (biased eastward)
-  # lodgepole pine and jack pine together
+  # if (fromDisk(pineMap))
+  #   pineMap[] <- pineMap[]
+  #
+  # ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
+  # MAXTREES <- 1125 * prod(res(pineMap)) / 100^2 ## TODO: round this?
+  #
+  # ## asymmetric spread (biased eastward)
+  # # lodgepole pine and jack pine together
   propPineRas <- if (nlayers(pineMap) > 1) sum(pineMap) else pineMap
   mv <- maxValue(propPineRas)
-
+  #
   if (mv > 1)
     propPineRas[] <- propPineRas[] / 100 ## much faster than calc; ## TODO: allow different params per species
 
   nas <- is.na(propPineRas[]) & !is.na(rasterToMatch[])
   propPineRas[nas] <- 0
-  # if (exists("EliotTesting")) {
-  #   EliotTesting <- TRUE
-  #   sim@params$mpbRedTopSpread$bgSettlingProp <- 0.7
-  #   sim@params$mpbRedTopSpread$advectionMag <- 20000
-  #   # minNumAgents <- 200
-  #   sim@params$mpbRedTopSpread$.plotInitialTime <- NA
-  # } else {
-  #   EliotTesting <- FALSE
-  # }
-  # propPineRas[] <- pmin(1, propPineRas[] + bgSettlingProp) ## TODO: why divide by 100??
-
-  # if (EliotTesting) { # TODO -- delete EliotTesting when no longer desired
-  #   a <- extent(studyArea)
-  #   starts <- massAttacksDT[ATKTREES > 0]$ID
-  #   d <- raster(massAttacksRas)
-  #   d[starts] <- 1
-  #   d <- crop(d, a)
-  #   starts <- which(d[] > 0)
-  #   massAttacksRas <- crop(massAttacksRas, a) * 300
-  #   propPineRas <- crop(propPineRas, a)
-  #   saveStack <- raster::rasterTmpFile()
-  # } else {
-  #   minNumAgents <- 50
-  #   starts <- massAttacksDT[["ID"]][massAttacksDT$ATKTREES > 0]
-  #   saveStack <- NULL
-  #   massAttacksRas <- massAttacksRas
-  # }
-
-  # mam <- raster::unstack(massAttacksStack)
-  # names(mam) <- names(massAttacksStack)
-  # massAttacksDTAllYears <- lapply(mam, function(x) {
-  #   pixels = which(x[] > 0)
-  #   setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
-  # })
 
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
-  omitPastPines <- TRUE
+  omitPastPines <- FALSE # was TRUE ... but maybe bad because there are many that have multiple years
   sdDist <- 1.2
   dispersalKernel <- "Weibull"
   # dispersalKernel <- "Exponential"
@@ -281,15 +431,17 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksStack,
   p["advectionMag"] <- 5e3 # Average distance of the asymmetry -- in m
   #p["advectionDir"] <- 90
   p["sdDist"] <- 1.2 # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
-  p["meanDistSD"] <- 20 # Interannual variation
+  #p["meanDistSD"] <- 20 # Interannual variation # not needed once we have wind and climate suitability
   #p["advectionDirSD"] <- 20
-  #lower <- c(25000,  3000,   0, 0.9, 1.001,  5)
-  #upper <- c(45000, 20000, 330, 2.5, 1.6, 30)
-  lower <- c(25000,  50,  0.9, 1.001)
-  upper <- c(65000, 2000, 2.5, 1.7)
+  # lower <- c(25000,  50,  0.9, 1.001)
+  # upper <- c(65000, 2000, 2.5, 1.7)
+  lower <- c(25000,  50,  0.9)
+  upper <- c(65000, 2000, 2.5)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
   maxDistance <- 1e5
+  if (is.null(quotedSpread))
+    quotedSpread <- quotedSpreadDefault
   fitType <- "distanceFromEachPoint"
   objsToExport <- setdiff(formalArgs("objFun"),
                           c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
@@ -297,97 +449,40 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksStack,
   objsToExport <- c("reqdPkgs", objsToExport, "objsToExport", "libPaths")
 
   # RESAMPLE MAPS TO COARSER
-  nams <- names(massAttacksStack)
-  rasTmplate <- raster(massAttacksStack)
-  rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
-  stt <- system.time(
-    mams <- raster::stack(
-        lapply(unstack(massAttacksStack), function(mam) aggregateRasByDT(mam, rasCoarse, fn = sum))
-      ))
-  names(mams) <- names(massAttacksStack)
-  massAttacksStack <- mams
-  propPineRas <- Cache(aggregateRasByDT, propPineRas, rasCoarse, fn = mean)
-  opts <- options(reproducible.cacheSpeed = "fast")
-  on.exit(options(opts))
-  windDirStack <- Cache(aggregate, windDirStack, res(rasCoarse)[1]/res(windDirStack)[1])
-  windSpeedStack <- Cache(aggregate, windSpeedStack, res(rasCoarse)[1]/res(windSpeedStack)[1])
-  options(opts)
+  # nams <- names(massAttacksStack)
+  # rasTmplate <- raster(massAttacksStack)
+  # rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
+  # massAttacksList <- raster::unstack(massAttacksStack)
+  # opts <- options(reproducible.cacheSpeed = "fast")
+  # on.exit(options(opts))
+  # mams <- raster::stack(
+  #   Cache(lapply, massAttacksList, function(mam)
+  #     aggregateRasByDT(mam, rasCoarse, fn = sum))
+  # )
+  # names(mams) <- names(massAttacksStack)
+  # massAttacksStack <- mams
+  # propPineRas <- Cache(aggregateRasByDT, propPineRas, rasCoarse, fn = mean)
+  # windDirStack <- Cache(aggregate, windDirStack, res(rasCoarse)[1]/res(windDirStack)[1])
+  # windSpeedStack <- Cache(aggregate, windSpeedStack, res(rasCoarse)[1]/res(windSpeedStack)[1])
+  # options(opts)
 
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
-  quotedSpread <- quote({
-    SpaDES.tools::spread3(start = starts,
-                          rasQuality = propPineRas,
-                          rasAbundance = massAttacksRas,
-                          advectionDir = rnorm(1, p[3], p[6]),
-                          advectionMag = p[2],
-                          meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])),
-                          sdDist = p[4],
-                          dispersalKernel = dispersalKernel,
-                          plot.it = FALSE,
-                          minNumAgents = minNumAgents,
-                          verbose = 0,
-                          skipChecks = TRUE,
-                          saveStack = NULL)
-  })
-
-  quotedSpread <- quote({
-      to <- raster::xyFromCell(massAttacksRas, atksKnownNextYr$pixels)
-      from <- raster::xyFromCell(massAttacksRas, starts)
-      out33 <- SpaDES.tools::distanceFromEachPoint(
-        to = to,
-        from = from,
-        angles = TRUE,
-        cumulativeFn = "+",
-        distFn = distanceFunction,
-        landscape = massAttacksRas,
-        propPineRas = propPineRas,
-        dispersalKernel = dispersalKernel,
-        asymParam = p[2],
-        sdDist = p[3],# p[4], # when there was estimation for advectionDir == needed p[4]
-        #cl = min(8, parallel::detectCores()),
-        windSpeed = windSpeedRas[],
-        windDir = windDirRas[],
-        meanDist = rlnorm(1, log(p[[1]]), log(p[4])),#meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])), with estimating advectionDir
-        maxDistance = maxDistance)
-      return(out33)
-  })
-
   ips <- c("localhost", "10.20.0.184", #"10.20.0.97",
            "10.20.0.220", "10.20.0.217") ## TODO: don't hardcode this. pass as param
-  adjustments <- c(1.25, 1.1, #0.8,
-                   0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
+  #adjustments <- c(1.25, 1.1, #0.8,
+  #                 0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
   #ips <- c("10.20.0.106", "10.20.0.68", "10.20.0.213")
-  #adjustments = 1
+  adjustments = 1
   if (isTRUE(type == "fit")) {
     fn <- ".allObjs.rda"
-    numCoresNeeded <- 100
+    numCoresNeeded <- 84 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
     reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table", "purrr")), reqdPkgs, value = TRUE)
     clusterIPs <- clusterSetup(workers = ips, objsToExport = objsToExport,
-                               packages = reqdPkgs, libPaths = libPaths, doSpeedTest = F, fn = fn,
+                               packages = reqdPkgs, libPaths = libPaths, doSpeedTest = TRUE, fn = fn,
                                numCoresNeeded = numCoresNeeded, adjustments = adjustments)
-    # message("Starting cluster with all cores per machine")
-    # if (FALSE) {
-    #   # Usefull for killing all child processes
-    #   clKill <- future::makeClusterPSOCK(ips, revtunnel = TRUE)
-    #   clusterEvalQ(clKill, system("pkill -f workRSOCK"))
-    #   stopCluster(clKill)
-    # }
-    # cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
-    # on.exit(try(parallel::stopCluster(cl)), add = TRUE)
-    # clusterExport(cl, varlist = c("fn", "reqdPkgs"), envir = environment())
-    # st <- system.time(clusterEvalQ(cl, {
-    #   load(file = fn, envir = .GlobalEnv)
-    #   .libPaths(libPaths)
-    #   suppressMessages(
-    #     Require::Require(reqdPkgs, install = FALSE)
-    #   )
-    # }))
-    # st <- system.time(clusterEvalQ(cl, {
-    #   try(unlink(fn), silent = TRUE)
-    # }))
-
     cl <- clusterSetup2(clusterIPs, filenameToLoad = fn, packages = reqdPkgs)
+    on.exit(try(stopCluster(cl)), add = TRUE)
     message("Starting DEoptim")
     stPre <- Sys.time()
     DEout <- DEoptim(fn = objFun,
@@ -397,20 +492,24 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksStack,
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl,
                                                strategy = 6,
-                                               itermax = 120,
+                                               itermax = 200,
                                                NP = numCoresNeeded),
                      fitType = fitType)
 
     saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
+    sim2 <- get("sim", whereInStack("sim"))
+    parms <- params(sim2)
+    saveRDS(parms, file = file.path("outputs", paste0("parms_", format(stPre), ".rds")))
     stPost <- Sys.time()
     print(difftime(stPost, stPre))
+    try(parallel::stopCluster(cl))
     browser()
 
   } else if (isTRUE(type == "runOnce")) {
     #profvis::profvis(
       st1 <- system.time({
         out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
-                      massAttacksStack = massAttacksStack[[1:2]])
+                      massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT)
       })
     #)
     print(st1)
@@ -435,6 +534,7 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksStack,
     stPost <- Sys.time()
 
   }
+  browser()
   objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
   DEout <- readRDS(tail(objs, 1))
   p[] <- DEout$optim$bestmem[] # use [] to keep names
@@ -464,337 +564,19 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksStack,
                        p = p,
                        omitArgs = "quotedSpread"
   )
-  options(opts2)
 
-  predictedStack <- stackFromDT(massAttacksStack, predictedDT)
+  predictedStack <- Cache(stackFromDT, massAttacksStack, predictedDT)
 
-  plotStacks <- stacksForPlot(massAttacksStack, predictedStack)
+  plotStack <- Cache(stacksForPlot, massAttacksStack, predictedStack, threshold = 0.5)
+
   browser()
-
-
-
+  return(invisible(plotStack))
+  browser()
   #########################################################
   #########################################################
-  browser()
 
-
-  maxD <- maxDistance + 125
-  r <- raster(extent(-maxD+ 250, maxD + 250 , -maxD, maxD), res = 250)
-  r[] <- 1
-  r <- gaussMap(r)
-  r <- r/maxValue(r)
-  abund <- raster(r)
-  #abund[mid] <- 10000
-
-  spiralsD <- spiralDistances(r, maxDis = maxDistance, cellSize = res(massAttacksStack)[1])
-  tos <- ( spiralsD[, c("row", "col")]) * res(r)
-  colnames(tos) <- c("x", "y")
-
-  sdDist = p[4]
-  par(mfrow = c(4,4))
-  for (i in 1:4) {
-    mid <- SpaDES.tools::middlePixel(abund)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
-    windDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
-    print("aaa")
-    dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                           propPineRas = r, fromCell = mid,
-                           toCells = toCells,
-                           asymParam = p["advectionMag"], angle = ddd[, "angles"],
-                           windDir = windDirRas[])
-    abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
-    plot(abund)
-
-
-    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                            propPineRas = r, fromCell = mid,
-                            toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
-                            windDir = windDirRas[])
-    abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
-    plot(abund)
-
-
-    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                            propPineRas = r, fromCell = mid,
-                            toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
-                            windDir =  windDirRas[])
-    abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
-    plot(abund)
-    a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
-    abund[toCells] <- a4
-    plot(abund)
-  }
-  plot(type = "n", x = 1:10, axes = F, xlab = "", ylab = "")
-  legend(x = 2, y = 8, col = c("red", "green"), lty= 1,
-         legend = c("annual average", "global average"),
-         cex = 2)
-  mtext(text = "Dispersal kernels", outer = TRUE, line = -3, xpd = TRUE)
-  # HAVEN'T MADE IT PAST HERE
-
-  ##########################################
-  maxD <- maxDistance + 125
-  r <- raster(extent(-maxD+ 250, maxD + 250 , -maxD, maxD), res = 250)
-  r[] <- 1
-  r <- gaussMap(r)
-  r <- r/maxValue(r)
-  abund <- raster(r)
-  #abund[mid] <- 10000
-
-  spiralsD <- spiralDistances(r, maxDis = maxDistance, cellSize = res(massAttacksStack)[1])
-  tos <- ( spiralsD[, c("row", "col")]) * res(r)
-  colnames(tos) <- c("x", "y")
-
-  sdDist = p[4]
-  # p["advectionMag"] <- 15000
-  par(mfrow = c(4,4))
-  for (i in 1:4) {
-    mid <- SpaDES.tools::middlePixel(abund)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
-    windDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
-    dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                           propPineRas = r, fromCell = mid,
-                           toCells = toCells,
-                           asymParam = p["advectionMag"], angle = ddd[, "angles"],
-                           windDir = windDirRas[])
-    abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
-    plot(abund)
-
-
-    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                            propPineRas = r, fromCell = mid,
-                            toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
-                            windDir = windDirRas[])
-    abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
-    plot(abund)
-
-
-    mid <- SpaDES.tools::middlePixel(abund) + sample(size = 1, -50000:50000)
-    (midXY <- xyFromCell(r, mid))
-    ddd <- distanceFromEachPoint(from = midXY, to = tos, angles = TRUE)
-    nas <- is.na(toCells)
-    ddd <- ddd[!nas,]
-    toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
-                            propPineRas = r, fromCell = mid,
-                            toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
-                            windDir =  windDirRas[])
-    abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
-    plot(abund)
-    a4 <- rescale(a1, c(0,1)) + rescale(a2, c(0,1)) + rescale(a3, c(0,1))
-    abund[toCells] <- a4
-    plot(abund)
-  }
-
-
+  visualizeKernel(p, massAttacksStack, maxDistance = maxDistance)
   ###############################################
-
-
-  stop()
-
-  # Visualize with maps
-  # Kernel
-  advectionMagTmp <- p[2] ;
-  advectionDir <- p[3]
-  r <- raster(extent(-20000, 20000, -20000, 20000), res = 100)
-  r[] <- 1
-  abund <- raster(r)
-  mid <- SpaDES.tools::middlePixel(abund)
-  abund[mid] <- 10000
-  out <- spread3(mid, rasQuality = r, rasAbundance = abund,
-                 advectionDir = advectionDir,
-                 advectionMag = advectionMagTmp,
-                 meanDist = meanDist,
-                 sdDist = sdDist, dispersalKernel = "weibull", plot.it = F)
-  abund[out$pixels] <- out$abundSettled
-  abund[mid] <- max(abund[], na.rm = TRUE) * 1.5
-  clearPlot(); Plot(abund)
-
-
-  nams <- names(massAttacksStack)
-  # diffs <- list()
-  diffs <- lapply(seq(nams)[-length(nams)], function(i) {
-    a <- massAttacksStack[[nams[i]]]
-    b <- propPineRas
-    whTos <- which(b[] >= 0.2)
-    whFroms <- which(a[] > 0)
-    if (length(whFroms) && length(whTos)) {
-      env <- new.env()
-      env$atksRasNextYr <- b
-      env$atksKnownNextYr <- data.table(pixels = whTos)
-      env$starts <- whFroms
-      env$massAttacksRas <- a
-      env$dispersalKernel <- "exponential"
-      env$propPineRas <- propPineRas
-      env$p <- p
-      st <- system.time(out <- eval(quotedSpread, envir = env))
-      pixels <- cellFromXY(massAttacksStack, out[, c("x", "y")])
-      predictedMap <- raster(massAttacksStack)
-      predictedMap[whTos] <- log(-out[, "val"] + 1)
-      clearPlot()
-      massAttacksRas <- env$massAttacksRas
-      nextYearAttacks <- massAttacksStack[[nams[i+1]]]
-      Plot(massAttacksRas, nextYearAttacks, predictedMap)
-
-
-      dirs <- distanceFromEachPoint(froms, tos, a, angles = TRUE)
-
-      browser()
-      pixels <- cellFromXY(a, xy = dirs[, c("x", "y")])
-      dt <- data.table(pixels, dirs[, c("dists", "angles")])
-      setorder(dt, dists)
-      dirs <- dt[, .SD[1:10], by = "pixels"]
-
-      # From https://www.themathdoctors.org/averaging-angles/
-      avgDir <- try(CircStats::deg(atan(sum(sin(dirs[, "angles"]))/sum(cos(dirs[, "angles"])))))
-      hist(dirs[["angles"]] %% (2*pi))
-      avgDist <- mean(dirs$dists)
-      if (is(avgDir, "try-error")) browser()
-    } else {
-      avgDir <- NA
-      avgDist <- NA
-    }
-
-    a <- trim(a)
-    a[] <- a[] > 0
-    b <- trim(b)
-    b[] <- (b[] > 0) + 1
-    d <- mosaic(a, b, fun = sum)
-    d[d[]==0] <- NA
-    levels(d) <- data.frame(ID = 0:3, c("none", "prevYr", "nextYr", "both"))
-    setColors(d) <- c("transparent", "red", "blue", "purple")
-    d <- setMinMax(d)
-    writeRaster(d, filename = paste0("MPB_Yrs_", nams[i], "-", nams[i+1], ".tif"), overwrite = TRUE)
-    # png(filename = paste0("MPB_Yrs_", nams[i], "-", nams[i+1], ".png"),
-    #     width = 2000)
-    # Plot(d)
-    # dev.off()
-    # diffs[[i]] <- d
-    list(ras = d, avgDir = avgDir, avgDist = avgDist)
-  })
-
-  diffs2 <- purrr::transpose(diffs)
-  diffs <- diffs2$ras
-  dirAvgs <- diffs2$avgDir
-  distAvgs <- unlist(diffs2$avgDist)
-  dirAvgs <- data.table(period = paste0(nams[-length(nams)], "-to-", nams[-1]),
-                        dirAvgs, distAvgs)
-  dirAvgs <- as.data.table(dirAvgs, keep.rownames = "YearPair")
-  names(dirAvgs) <-
-    names(diffs) <- nams[-length(nams)]
-  dev()
-  clearPlot()
-  Plot(diffs, visualSqueeze = 1)
-
-  # Average direction
-
-  mn <- (meanDist + advectionMagTmp)
-  sd <- mn/sdDist # 0.8 to 2.0 range
-  shape <- (sd/mn)^(-1.086)
-  scale <- mn/exp(lgamma(1 + 1/shape))
-  aa <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)
-
-  mn <- max(10, (meanDist - advectionMagTmp))
-  sd <- mn/sdDist # 0.8 to 2.0 range
-  shape <- (sd/mn)^(-1.086)
-  scale <- mn/exp(lgamma(1 + 1/shape))
-  bb <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)
-  clearPlot()
-  Plot(aa$x, aa$y, addTo = "Kernel_with_wind", type = "l")
-  Plot(bb$x, bb$y, addTo = "Kernel_without_wind", type = "l")
-
-  ## sum negative log likelihood for attacked pixels
-
-  ## TODO: something other than simple sum of squares?
-  #  metric <- (atkAreaData - atkAreaSim)^2 #+ (SNLL / 10^3)
-
-  if (isTRUE(!is.na(params$.plotInitialTime))) {
-
-    out2 <- out[, list(abundSettled = sum(abundSettled)), by = c("distance", "direction")]
-    maxDist <- max(out$distance)
-    rr <- raster::raster(extent(-maxDist, maxDist, -maxDist, maxDist), res = res(propPineRas))
-    out3 <- out2[abundSettled > 0]
-    xx = out3$distance * (sin(out3$direction))
-    yy = out3$distance * (-cos(out3$direction))
-    pixels <- cellFromXY(rr, cbind(xx, yy))
-    rr[pixels] <- out3$abundSettled
-    raster::plot(rr)
-
-
-    out2 <- out[, list(abundSettled = sum(abundSettled)), by = c("pixels")]
-    rr <- raster::raster(propPineRas)
-    rr[out2$pixels] <- out2$abundSettled
-    rr2 <- trim(rr)
-    rr3 <- raster(rr2)
-    rr3[rr2[] > 10] <- 2
-    rr4 <- trim(rr3)
-    rr5 <- crop(rr2, rr4)
-    Plot(rr5)
-
-
-  }
-  if (EliotTesting) {
-    fname <- file.path(outputPath(sim), paste0("spread", current(sim)$eventTime, ".tif"))
-    tf <- raster::rasterTmpFile()
-    r <- stack(saveStack)
-    r2 <- calc(r, sum, filename = tf, overwrite = TRUE)
-    writeRaster(r2, fname, overwrite = TRUE)
-    unlink(saveStack, tf)
-  }
-
-  # if (EliotTesting) {
-  #   tmpStackObj <- stack(saveStack)
-  #   ex <- extent(tmpStackObj)
-  #   ex@ymax <- ex@ymax - 4000
-  #   ex@ymin <- 7389000
-  #   ex@xmax <- -901000
-  #   out2 <- crop(tmpStackObj, ex) * 10
-  #   if (require(animation)) {
-  #     gifName <- "C:\\Eliot\\Google Drive\\McIntire-lab\\figures\\MPB animation 700px small area 3.gif"
-  #     #gifName <- file.path(tempdir(), "animation.gif")
-  #     saveGIF(interval = 0.1, ani.height = 700, ani.width = 700, movie.name = gifName, expr = {
-  #       for (i in seq(numLayers(out2))) plot(out2[[i]])
-  #     })
-  #   }
-  #   stop("End it here")
-  # }
 
   migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
   massAttacksDTNew <- massAttacksDT[migrantsDT, on = c(ID = "pixels")]
@@ -803,298 +585,6 @@ dispersal2 <- function(pineMap, studyArea, massAttacksDT, massAttacksStack,
   return(invisible(massAttacksDTNew))
 }
 
-
-
-objFun <- function(p, propPineRas, # massAttacksRas,
-                   advectionDir, advectionMag,
-                   # minNumAgents,
-                   massAttacksStack, currentTime, reps = 10,
-                   quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel,
-                   maxDistance, windDirStack, windSpeedStack) {
-
-  # DEoptim, when used across a network, inefficiently moves large objects every time
-  #   it calls makes an objFun call. Better to move the objects to each node's disk,
-  #   then read them in locally from disk --> faster when bandwidth is slow
-  if (missing(propPineRas))
-    propPineRas <- get("propPineRas", envir = .GlobalEnv)
-  if (missing(massAttacksStack))
-    massAttacksStack <- get("massAttacksStack", envir = .GlobalEnv)
-  # if (missing(massAttacksRas))
-  #   massAttacksRas <- get("massAttacksRas", envir = .GlobalEnv)
-  if (missing(advectionDir))
-    advectionDir <- get("advectionDir", envir = .GlobalEnv)
-  if (missing(advectionMag))
-    advectionMag <- get("advectionMag", envir = .GlobalEnv)
-  # if (missing(minNumAgents))
-  #   minNumAgents <- get("minNumAgents", envir = .GlobalEnv)
-  if (missing(currentTime))
-    currentTime <- get("currentTime", envir = .GlobalEnv)
-  if (missing(fitType))
-    fitType <- get("fitType", envir = .GlobalEnv)
-  if (missing(omitPastPines))
-    omitPastPines <- get("omitPastPines", envir = .GlobalEnv)
-  if (missing(sdDist))
-    sdDist <- get("sdDist", envir = .GlobalEnv)
-  if (missing(dispersalKernel))
-    dispersalKernel <- get("dispersalKernel", envir = .GlobalEnv)
-  if (missing(maxDistance))
-    maxDistance <- get("maxDistance", envir = .GlobalEnv)
-  if (missing(windDirStack))
-    windDirStack <- get("windDirStack", envir = .GlobalEnv)
-  if (missing(windSpeedStack))
-    windSpeedStack <- get("windSpeedStack", envir = .GlobalEnv)
-
-  if (fitType == "likelihood") {
-    if (reps < 10) {
-      message("reps must be at least 10 if using likelihood; setting to 10")
-      reps <- 10
-    }
-  }
-
-  allYears <- names(massAttacksStack)
-
-  combinations <- seq_along(allYears[-1])
-  years <- data.frame(
-    startYears = allYears[-length(allYears)],
-    endYears = allYears[-1])
-  # combinations <- cbind(combinations, years[combinations[, "years"], ])
-  # combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
-
-  maxObjFunValIndiv <- -Inf
-  # mam <- raster::unstack(massAttacksStack)
-  outBig <- purrr::pmap(
-    .l = years, # this creates startYears and endYears because it is a data.frame
-    massAttacksStack = massAttacksStack,
-    maxDistance = maxDistance,
-    p = p, reps = reps,
-    # minNumAgents = minNumAgents,
-    propPineRas = propPineRas,
-    quotedSpread = quotedSpread,
-    fitType = fitType,
-    omitPastPines = omitPastPines,
-    windDirStack = windDirStack,
-    windSpeedStack = windSpeedStack,
-    dispersalKernel = dispersalKernel,
-    .f = objFunInner
-  )
-
-  sum(unlist(outBig), na.rm = TRUE)
-
-}
-
-objFunInner <- function(
-  #reps,
-  startYears, endYears,
-  # p, minNumAgents,
-  massAttacksStack,
-  #propPineRas,
-  ...,
-  objFunValOnFail = 1e3,
-  # quotedSpread,
-  fitType, omitPastPines#,
-  # maxDistance, windDirStack, windSpeedStack
-) {
-  massAttacksRas <- massAttacksStack[[startYears]]
-  atksRasNextYr <- massAttacksStack[[endYears]]
-  wh <- which(atksRasNextYr[] > 0)
-  atksKnownNextYr <- setDT(list(pixels = wh, ATKTREES = atksRasNextYr[][wh]))
-  out <- evalQuotedSpread(# startYears = startYears, endYears = endYears,
-                          atksKnownNextYr = atksKnownNextYr,
-                          massAttacksRas = massAttacksRas,
-                          ...)
-  browser()
-  # massAttacksRas <- massAttacksStack[[startYears]]
-  # windDirRas <- windDirStack[[startYears]]
-  # windSpeedRas <- windSpeedStack[[startYears]]
-  #
-  # starts <- which(massAttacksStack[[startYears]][] > 0)
-  #
-  # if (omitPastPines) {
-  #
-  #   namesMAM <- names(massAttacksStack)
-  #
-  #   namesToStartYears <- namesMAM[seq(which(namesMAM %in% startYears))]
-  #   # unlist them
-  #   mam <- if (length(namesToStartYears) == 1)
-  #     list(massAttacksStack[[namesToStartYears]])
-  #   else
-  #     raster::unstack(massAttacksStack[[namesToStartYears]])
-  #   names(mam) <- namesToStartYears
-  #   massAttacksDTYearsToPres <- lapply(mam, function(x) {
-  #     pixels = which(x[] > 0)
-  #     setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
-  #   })
-  #   massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
-  # }
-  # atksRasNextYr <- massAttacksStack[[endYears]]
-  # wh <- which(atksRasNextYr[] > 0)
-  # atksKnownNextYr <- setDT(list(pixels = wh, ATKTREES = atksRasNextYr[][wh]))
-  #
-  # env <- environment()
-  #
-  # out <- lapply(seq_len(reps), function(rep) as.data.table(eval(quotedSpread, envir = env)))
-  # out <- rbindlist(out, idcol = "rep")
-
-  if (omitPastPines) {
-
-    namesMAM <- names(massAttacksStack)
-
-    namesToStartYears <- namesMAM[seq(which(namesMAM %in% startYears))]
-    # unlist them
-    mam <- if (length(namesToStartYears) == 1)
-      list(massAttacksStack[[namesToStartYears]])
-    else
-      raster::unstack(massAttacksStack[[namesToStartYears]])
-    names(mam) <- namesToStartYears
-    massAttacksDTYearsToPres <- lapply(mam, function(x) {
-      pixels = which(x[] > 0)
-      setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
-    })
-    massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
-  }
-  if (fitType == "distanceFromEachPoint") {
-    expectedNum <- out$val # * 1125 * prod(res(massAttacksRas))/1e4
-
-    # Rescale -- we are interested in the distribution, not the absolute values -- maybe?: TODO
-    rescaler <- sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
-    # likelihood
-    lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*rescaler, size = 0.1, log = TRUE)
-    theInfs <- is.infinite(lll)
-    if (any(theInfs)) {
-      lowestProb <- min(lll[!theInfs])
-      lll[theInfs] <- lowestProb
-    }
-    objFunVal <- lll
-
-  } else {
-    stop("not tested recently; use fitType = 'distanceFromEachPoint'")
-    # Remove pixels that had already been attacked in the past -- emulating MPB Suppression efforts
-    if (omitPastPines)
-      atksKnownNextYr <- atksKnownNextYr[!massAttacksDTYearsToPres, on = "pixels"]
-
-    atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) ), by = c("rep", "pixels")]
-    # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
-
-    ## attacked area from data
-    # atksKnownNextYr <- atksKnownNextYr[ATKTREES > 0]
-    # i <- 1
-    oo <- atksKnownNextYr[atksNextYearSims, on = "pixels", nomatch = NA]
-    set(oo, which(is.na(oo$ATKTREES)), "ATKTREES", 0L)
-    # oo <- atksNextYearSims[atksKnownNextYr, on = "pixels", nomatch = NA]
-    if (reps > 1)
-      oo[, ATKTREES := ATKTREES[1], by = "pixels"]
-
-    #i <- 0
-    if (fitType == "likelihood") {
-      stop("not tested recently")
-      probs <- oo[, list(prob = {
-        prob <- if (.N > 2) {
-          i <<- i + 1
-          # print(i)
-
-          max(1e-14, demp(ATKTREES[1], abundSettled))
-
-        } else {
-          1e-14
-        }
-      }), by = "pixels"]
-      objFunVal <- sum(-log(probs$prob))
-    } else {
-      oo[is.na(abundSettled),  abundSettled := 0]
-      if (fitType == "ss1") {
-        objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
-      } else {
-        #if (startYears == "X2010") browser()
-        # To balance the zeros and non-zeros, must sub-sample the zeros so there are equal
-        #   number as the non-zeros
-        whNonZero <- oo$ATKTREES > 0
-        numNonZero <- tabulate(as.integer(whNonZero))
-        whZero <- which(!whNonZero)
-        whNonZero <- which(whNonZero)
-
-        # There are way more zeros than non zeros. We need to sub-sample the zeros or
-        #   they influence the objFun too much. Here, hard coded -- take 1/4 of the number
-        #   of zeros as there are non-zeros
-        samZero <- sample(whZero, size = round(numNonZero/4, 0))
-        samNonZero <- sample(whNonZero, size = numNonZero)
-        sam <- c(samZero, samNonZero)
-        atkTrees <- oo$ATKTREES[sam]
-        abundSett <- oo$abundSettled[sam]
-
-        # Rescale so that this is a relative abundance
-        ratio <- sum(abundSett)/sum(atkTrees)
-        abundSettRescaled <- abundSett/ratio
-
-        if (fitType == "logSAD") {
-          objFunVal <- log(abs(atkTrees - abundSettRescaled))
-        } else if (fitType == "SAD") {
-          objFunVal <- abs(atkTrees - abundSettRescaled)
-        } else {
-          stop("fitType must be logSAD or SAD")
-        }
-        # browser()
-        isInf <- is.infinite(objFunVal)
-        if (any(isInf)) {
-          if (all(isInf)) {
-            negInf <- objFunVal < 0
-            if (any(negInf))
-              objFunVal[isInf] <- 0
-            if (any(!negInf))
-              objFunVal[isInf] <- objFunValOnFail
-          } else {
-            objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
-          }
-        }
-      }
-    }
-  }
-  objFunVal <- -round(sum(objFunVal, na.rm = TRUE), 3) # negative so optimizer does minimize
-  # message(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
-  return(objFunVal)
-}
-
-evalQuotedSpread <- function(reps, atksKnownNextYr,
-                             # startYears, endYears,
-                             p, # minNumAgents,
-                             massAttacksRas, dispersalKernel,
-                             # massAttacksStack,
-                             propPineRas, # objFunValOnFail = 1e3,
-                             quotedSpread, # fitType,
-                             # omitPastPines,
-                             maxDistance, windDirRas, windSpeedRas) {
-  # massAttacksRas <- massAttacksStack[[startYears]]
-  #windDirRas <- windDirStack[[startYears]]
-  #windSpeedRas <- windSpeedStack[[startYears]]
-
-  starts <- which(massAttacksRas[] > 0)
-
-  # if (omitPastPines) {
-  #
-  #   namesMAM <- names(massAttacksStack)
-  #
-  #   namesToStartYears <- namesMAM[seq(which(namesMAM %in% startYears))]
-  #   # unlist them
-  #   mam <- if (length(namesToStartYears) == 1)
-  #     list(massAttacksStack[[namesToStartYears]])
-  #   else
-  #     raster::unstack(massAttacksStack[[namesToStartYears]])
-  #   names(mam) <- namesToStartYears
-  #   massAttacksDTYearsToPres <- lapply(mam, function(x) {
-  #     pixels = which(x[] > 0)
-  #     setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
-  #   })
-  #   massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
-  # }
-  # atksRasNextYr <- massAttacksStack[[endYears]]
-  # wh <- which(atksRasNextYr[] > 0)
-  # atksKnownNextYr <- setDT(list(pixels = wh, ATKTREES = atksRasNextYr[][wh]))
-
-  env <- environment()
-
-  out <- lapply(seq_len(reps), function(rep) as.data.table(eval(quotedSpread, envir = env)))
-  out <- rbindlist(out, idcol = "rep")
-
-}
 
 
 spiralDistances <- function(pixelGroupMap, maxDis, cellSize) {
@@ -1117,26 +607,10 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYr
       windSpeed <- windSpeed[fromCell]
     }
     advectionXY <- c(x = sin(rad(windDir))*asymParam*windSpeed, y = cos(rad(windDir))*asymParam*windSpeed)
-    # neededXY <- toXYs - rep(advectionXY, each = NROW(toXYs))
-
-    # x <- numeric(NROW(toXYs))
-    # y <- x
     x <- toXYs[, 'x'] - advectionXY[1]/meanDist*dist
     y <- toXYs[, 'y'] - advectionXY[2]/meanDist*dist
     newTo <- cbind(x, y)
     colnames(newTo) <- c("x", "y")
-    # xLT0 <- toXYs[, "x"] < 0
-    # whXLT0 <- which(xLT0)
-    # whXGT0 <- which(!xLT0)
-    # x[whXLT0] <- toXYs[whXLT0, 'x'] - advectionXY[1]/meanDist*dist[whXLT0]
-    # x[whXGT0] <- toXYs[whXGT0, 'x'] - advectionXY[1]/meanDist*dist[whXGT0]
-    # yLT0 <- toXYs[, "y"] < 0
-    # whYLT0 <- which(yLT0)
-    # whYGT0 <- which(!yLT0)
-    # y[whYLT0] <- toXYs[whYLT0, 'y'] - advectionXY[2]/meanDist*dist[whYLT0]
-    # y[whYGT0] <- toXYs[whYGT0, 'y'] - advectionXY[2]/meanDist*dist[whYGT0]
-    # x <- toXYs[, 'x'] - advectionXY[1]/meanDist*toXYs[, 'x']
-    # y <- toXYs[, 'y'] - advectionXY[2]/meanDist*toXYs[, 'y']
     if (!is.null(dim(dist))) dist <- dist[,1, drop = TRUE]
     dists <- cbind(origX = toXYs[, "x"], origY = toXYs[, "y"],
                    origDist = dist,
@@ -1145,35 +619,9 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYr
   }
 
   prob <- kernelFn(meanDist, sdDist, dispersalKernel, dist)
-  # if (grepl("Weibull", dispersalKernel)) {
-  #   mn <- (meanDist)
-  #   sd <- mn/sdDist # 0.8 to 2.0 range
-  #   shape <- (sd/mn)^(-1.086)
-  #   scale <- mn/exp(lgamma(1+1/shape))
-  #
-  #   if (grepl("Weibull", dispersalKernel)) {
-  #     prob <- dweibull(dist, scale = scale, shape = shape)
-  #   }
-  #
-  #   infs <- is.infinite(prob)
-  #   if (any(infs))
-  #     prob[infs] <- 0
-  # } else {
-  #   prob <- dexp(dist, rate = 1/meanDist)
-  #
-  # }
 
-  # rescale the probability so area under curve is equal to source population size
   ll <- landscape[fromCell]
   prob1 <- prob * ll
-  #prob1 <- probInner * propPineRas[][toCells]
-  # rescaler <- ll/sum(prob1)
-  # prob1 <- prob1 * rescaler # make it negative
-
-  # if (any(is.infinite(out1))) browser()
-  # angle <- -30:30/10
-  # plot(deg(angle), asymParam^sin(angle-rad(windDir)))
-  # plot(deg(angle), asymParam^cos(angle-rad(windDir)))
   return(prob1)
 }
 
@@ -1206,47 +654,46 @@ clusterSetup <- function(workers, objsToExport, packages,
       ss <- system.time({
         for (i in 1:10000) rnorm(1e4)
       })
-      data.table::data.table(elapsed = ss[3], cores = parallel::detectCores())
+      data.table::data.table(elapsed = ss[3], trueCores = parallel::detectCores())
     })
   } else {
     out <- clusterEvalQ(clSingle, {
-      data.table::data.table(elapsed = 1, cores = parallel::detectCores())
+      data.table::data.table(elapsed = 1, trueCores = parallel::detectCores())
     })
   }
 
   # parallel::clusterEvalQ(clSingle, system("pkill -f workRSOCK"))
   names(out) <- workers
   out2 <- rbindlist(out, idcol = TRUE)
-  relSpeed <- 1/out2$elapsed*numCoresNeeded
-  ord <- order(relSpeed)
+  relSpeed <- out2$trueCores/out2$elapsed*numCoresNeeded
+  relSpeed <- relSpeed/numCoresNeeded
+  relSpeed <- relSpeed/max(relSpeed)
   out2[, relSpeed := relSpeed]
-  out2[, rank := rank(-relSpeed)]
-  nonHTcores <- out2$cores/2
+  nonHTcores <- out2$trueCores/2
   out2[, nonHTcores := nonHTcores]
   sumNonHTcores <- sum(nonHTcores)
-  needHTcores <- max(numCoresNeeded, numCoresNeeded - sumNonHTcores)
-  for (i in seq_along(workers)) {
-    out2[rank == i, cores := nonHTcores + round(needHTcores/2^i)]
-  }
-  out2[, cores := round(cores * adjustments / max(adjustments))]
+  # needHTcores <- max(numCoresNeeded, numCoresNeeded - sumNonHTcores)
+
+  out2[, cores := round(nonHTcores * adjustments / max(adjustments))]
 
   # Increase ncores upwards
   m <- 0
   while (sum(out2$cores) < numCoresNeeded) {
     m <- ((m + 1) - 1) %% NROW(out2) + 1
-    out2[m, cores := cores + 1]
+    out2[m, cores := cores + relSpeed]
   }
   # Decrease down to 1 each
+  out2[, cores := ceiling(cores)]
   m <- 0
   set(out2, NULL, "cores", as.numeric(out2$cores))
   while ((sum(floor(out2$cores)) > numCoresNeeded) && any(out2$cores > 1)) {
     m <- ((m + 1) - 1) %% NROW(out2) + 1
     if (out2[m,]$cores > 1) {
       maxC <- max(out2$cores)
-      out2[m, cores := cores - cores/maxC]
+      out2[m, cores := cores - 1]
     }
   }
-  set(out2, NULL, "cores", floor(out2$cores))
+  # set(out2, NULL, "cores", floor(out2$cores))
   # Decrease down to 0 or 1 each
   m <- 0
   while (sum(out2$cores) > numCoresNeeded && any(out2$cores > 0)) {
@@ -1297,6 +744,15 @@ clusterSetup <- function(workers, objsToExport, packages,
   return(clusterIPs)
   #clOut <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
   #return(clOut)
+}
+
+
+grow <- function(sim) {
+  ## determine the actual growth based on the actual number of attacked trees/ha
+  sim$massAttacksDT[, greenTreesYr_t := xt(ATKTREES, CLIMATE, P(sim)$dataset,
+                                           sim$massAttacksStack, mod$growthData)]
+
+  return(invisible(sim))
 }
 
 # clOut= clusterSetup(workers = ips[1], numCoresNeeded = 1,
@@ -1389,50 +845,6 @@ kernelFn <- function(meanDist, sdDist, dispersalKernel, dist) {
   prob
 }
 
-#' @param massAttacksStack A rasterStack object with maps of number of attacked trees per pixel.
-predictQuotedSpread <- function(massAttacksStack, # startYears, atksKnownNextYr,
-                                dispersalKernel = "Weibull",
-                                propPineRas, maxDistance, quotedSpread, p,
-                                windDirStack, windSpeedStack, ...) {
-  nams <- intersect(names(massAttacksStack), names(windDirStack))
-  # nams <- names(massAttacksStack)
-  names(nams) <- nams
-  # lastOne <- length(nams)
-  # nams <- nams# [-lastOne]
-  massAttacksList <- raster::unstack(massAttacksStack[[nams]])
-  windDirList <- raster::unstack(windDirStack[[nams]])
-  windSpeedList <- raster::unstack(windSpeedStack[[nams]])
-  propPineRas <- propPineRas
-  reps <- 1
-
-  # When we are in "predict mode", we don't know the attacks next year ...
-  #   so we supply a map of pine
-  whTos <- which(propPineRas[] >= 0.3)
-  atksKnownNextYr <- data.table::data.table(pixels = whTos)
-  out22 <- mcMap(nam = nams,
-                 massAttacksRas = massAttacksList,
-                 windSpeedRas = windSpeedList,
-                 windDirRas = windDirList,
-                 mc.cores = length(nams),
-                  function(nam, massAttacksRas, windDirRas, windSpeedRas) {
-                    whFroms <- which(massAttacksRas[] > 0)
-                    if (length(whFroms) && length(whTos)) {
-                      message("Predicting ", nam)
-                      st <- system.time(
-                        out <-
-                          SpaDES.tools:::docall(
-                            evalQuotedSpread,
-                            args = mget(formalArgs(evalQuotedSpread), inherits = TRUE)))
-
-                    } else {
-                      out <- list()
-                    }
-                    return(out)
-                  }
-  )
-  rbindlist(out22, idcol = "Year")
-}
-
 
 stackFromDT <- function(massAttacksStack, predictedDT) {
   indices <- matrix(rep(NA, nlayers(massAttacksStack) * ncell(massAttacksStack)),
@@ -1462,7 +874,7 @@ yrNamesPlus1 <- function(yrNames) {
   paste0("X", as.integer(yrNames) + 1)
 }
 
-stacksForPlot <- function(massAttacksStack, predictedStack) {
+stacksForPlot <- function(massAttacksStack, predictedStack, threshold = 1) {
   yrNames <- names(massAttacksStack)
   yrNamesPlus1 <- yrNamesPlus1(yrNames)
   stk <- raster::stack()
@@ -1477,7 +889,7 @@ stacksForPlot <- function(massAttacksStack, predictedStack) {
       AllThree[whNY] <- AllThree[whNY] + 2
     }
     whPM <- which(!is.na(predictedStack[[yrNamesPlus1[lay]]][]) &
-                    predictedStack[[yrNamesPlus1[lay]]][] > 1)
+                    predictedStack[[yrNamesPlus1[lay]]][] > threshold)
     AllThree[whPM] <- AllThree[whPM] + 4
     levels(AllThree) <- data.frame(ID = 1:7,
                                    Label = c("LastYr", "NextYr", "LastAndNext", "PredYr", "LastYrAndPredYr", "NextYrAndPredYr", "LYRandNYandPY"))
@@ -1486,5 +898,7 @@ stacksForPlot <- function(massAttacksStack, predictedStack) {
     stk <- addLayer(stk, AllThree)
   }
   names(stk) <- paste0("pred", yrNamesPlus1)
+  stk[which(stk[] == 0)] <- NA
   stk
 }
+
