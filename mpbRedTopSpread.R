@@ -473,7 +473,7 @@ dispersal2 <- function(quotedSpread, pineMap, studyArea, massAttacksDT, massAtta
   #adjustments <- c(1.25, 1.1, #0.8,
   #                 0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
   #ips <- c("10.20.0.106", "10.20.0.68", "10.20.0.213")
-  adjustments = 1
+  adjustments = c(0.9, 1.2, 0.8, 1.2)
   if (isTRUE(type == "fit")) {
     fn <- ".allObjs.rda"
     numCoresNeeded <- 84 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
