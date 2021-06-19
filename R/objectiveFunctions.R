@@ -4,7 +4,7 @@ objFun <- function(p, propPineRas, # massAttacksRas,
                    # minNumAgents,
                    massAttacksStack, massAttacksDT, currentTime, reps = 10,
                    quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel,
-                   maxDistance, windDirStack, windSpeedStack) {
+                   maxDistance, windDirStack, windSpeedStack, subsampleFrom = NULL) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
@@ -39,6 +39,8 @@ objFun <- function(p, propPineRas, # massAttacksRas,
     windDirStack <- get("windDirStack", envir = .GlobalEnv)
   if (missing(windSpeedStack))
     windSpeedStack <- get("windSpeedStack", envir = .GlobalEnv)
+  if (missing(subsampleFrom))
+    subsampleFrom <- get("subsampleFrom", envir = .GlobalEnv)
 
   if (fitType == "likelihood") {
     if (reps < 10) {
@@ -72,6 +74,7 @@ objFun <- function(p, propPineRas, # massAttacksRas,
     windDirStack = windDirStack,
     windSpeedStack = windSpeedStack,
     dispersalKernel = dispersalKernel,
+    subsampleFrom = subsampleFrom,
     .f = objFunInner
   )
 
@@ -87,10 +90,18 @@ objFunInner <- function(
   massAttacksDT,
   ...,
   objFunValOnFail = 1e3,
-  fitType, omitPastPines
+  fitType, omitPastPines,
+  subsampleFrom = NULL
 ) {
   layerName1 <- grep(startYears, names(massAttacksStack), value = TRUE)
+
   massAttacksDTThisYr <- massAttacksDT[layerName %in% layerName1]
+  if (!is.null(subsampleFrom)) {
+    if (Require:::isWindows() || amc::isRstudio())
+      message("subsampleFrom is not NULL; using ", floor(NROW(massAttacksDTThisYr)/subsampleFrom),
+              " from cells, about 1/", subsampleFrom)
+    massAttacksDTThisYr <- massAttacksDTThisYr[sort(sample(1:NROW(massAttacksDTThisYr), NROW(massAttacksDTThisYr)/subsampleFrom))]
+  }
   # starts <- massAttackThisYr$pixel
   # windDirVec <- massAttackThisYr$windDir
   # windSpeedVec <- massAttackThisYr$windSpeed
@@ -98,7 +109,7 @@ objFunInner <- function(
   # if (FALSE) {
   # massAttacksRas <- massAttacksStack[[startYears]]
   massAttacksRas <- raster(massAttacksStack[[startYears]])
-  massAttacksRas[massAttacksDTThisYr$pixel] <- massAttacksDTThisYr$greenTreesYr_t #not green trees
+  massAttacksRas[massAttacksDTThisYr$pixel] <- massAttacksDTThisYr$greenTreesYr_t # note green trees
   starts <- which(massAttacksRas[] > 0)
   windDirRas <- windDirStack[[startYears]]
   windSpeedRas <- windSpeedStack[[startYears]]
