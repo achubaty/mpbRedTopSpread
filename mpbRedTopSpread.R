@@ -19,30 +19,38 @@ defineModule(sim, list(
   citation = list(),
   reqdPkgs = list("achubaty/amc@development",
                   "BioSIM", ##  ## not on CRAN/GitHub; see install info at top of this file
-                  "CircStats", "data.table", "DEoptim", "EnvStats",
-                  "SpaDES.core (>= 1.0.8)",
-                  "PredictiveEcology/LandR@LCC2010 (>= 1.0.4)",
+                  "CircStats", "data.table", "DEoptim", "EnvStats", "ggplot2",
+                  "PredictiveEcology/SpaDES.core@modifyList2 (>= 1.0.8.9004)",
+                  "PredictiveEcology/LandR@cluster (>= 1.0.4.9019)",
                   "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "PredictiveEcology/mpbutils (>= 0.1.2)", "purrr",
-                  "quickPlot", "raster", "RColorBrewer", "PredictiveEcology/reproducible",
+                  "quickPlot", "raster", "RColorBrewer",
+                  "PredictiveEcology/reproducible@DotsBugFix (>= 1.2.7.9009)",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)"),
   parameters = rbind(
     defineParameter("dataset", "character", "Boone2011", NA, NA, "Which dataset to use for stand dynamic model fitting. One of 'Boone2011' (default), 'Berryman1979_fit', or 'Berryman1979_forced'. Others to be implemented later."),
     defineParameter("growthInterval", "numeric", 1, NA, NA, "This describes the interval time between growth events"),
     defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
                     "The direction of the spread bias, in degrees from north"),
-    defineParameter("advectionMag", "numeric", 1000, NA, NA,
-                    "The magnitude of the directional bias of spread"),
+    defineParameter("advectionMag", "numeric", 5e3, NA, NA,
+                    "The magnitude of the wind effect on spread. This number is multiplied by the wind speed (which averages 9.6 km/h in the historical dataset)"),
     defineParameter("bgSettlingProp", "numeric", 0.1, 0, 1,
                     "The proportion of beetles that settle from those that could potentially settle, even if no pine"),
-    defineParameter("meanDist", "numeric", 1000, NA, NA,
+    defineParameter("maxDistance", "numeric", 1.4e5, NA, NA,
+                    "The maximum distance to allow for pair-wise from-to dispersal pairs"),
+    defineParameter("meanDist", "numeric", 1e4, NA, NA,
                     "Expected dispersal distance (m); ~63% go less than this distance"),
     defineParameter("quotedSpread", "language", NULL, NA, NA,
                     "A spread function that is contained within a quote(). If left at NULL or NA, it will use the module version"),
-    defineParameter("type", "character", "fit", NA, NA,
-                    "Expected dispersal distance (m); ~63% go less than this distance"),
-    defineParameter(".plotInitialTime", "numeric", NA, NA, NA,
+    defineParameter("sdDist", "numeric", 1.2, NA, NA,
+                    paste0("The dispersion term for the Weibull dispersal kernel: contributes to shape and scale parameters;",
+                    "sqrt(variance(of the Weibull distribution)) ")),
+    defineParameter("type", "character", "DEoptim", NA, NA,
+                    "One of three modes of running this module: DEoptim, optim, runOnce or nofit"),
+    defineParameter(".plots", "character", "screen", NA, NA,
+                    "Zero or more of c('screen', 'png', 'pdf', 'raw'. See ?Plots"),
+    defineParameter(".plotInitialTime", "numeric", start(sim), NA, NA,
                     "This describes the simulation time at which the first plot event should occur"),
     defineParameter(".plotInterval", "numeric", 1, NA, NA,
                     "This describes the interval between plot events"),
@@ -81,9 +89,10 @@ defineModule(sim, list(
   ),
   outputObjects = bindrows(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
+    createsOutput("pBest", "numeric", "Best p values coming from DEoptim"),
     createsOutput("propPineRas", "RasterLayer",
                   paste("Proportion (not percent) cover map of *all* pine. This will",
-                  " be the pixel-based sum if there are more than one layer")),
+                        " be the pixel-based sum if there are more than one layer")),
   )
 ))
 
@@ -98,8 +107,10 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
            # schedule future event(s)
            sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "grow", eventPriority = 4.5)
-           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 4.5)
-           sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", .last() - 1)
+           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
+           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "predict", 6.5)
+           # sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "explore", 7.5)
+           sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", 7.5)
            sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save", .last())
          },
          "grow" = {
@@ -111,10 +122,12 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "grow", eventPriority = 5.5)
          },
          "dispersal" = {
-           out <- dispersal2(quotedSpread <- P(sim)$quotedSpread,
-                             pineMap = sim$pineMap, studyArea = sim$studyArea,
+           # The outputs for this are saved to disk ... so no "return" sim
+           sim$pBest <- dispersal2(quotedSpread = P(sim)$quotedSpread,
+                             propPineRas = sim$propPineRas, studyArea = sim$studyArea,
                              massAttacksDT = sim$massAttacksDT,
                              massAttacksStack = sim$massAttacksStack,
+                             maxDistance = P(sim)$maxDistance,
                              # massAttacksRas = sim$massAttacksRas,
                              params = P(sim),
                              windDirStack = sim$windDirStack,
@@ -125,9 +138,12 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                              currentTime = time(sim),
                              reqdPkgs = reqdPkgs(module = currentModule(sim), modulePath = modulePath(sim))[[currentModule(sim)]]
            )
-           sim$plotStack <- out
+
            # sim <- dispersal(sim)
-           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
+           # sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
+         },
+         "predict" = {
+           Predict(sim)
          },
          "plot" = {
            sim <- plotFn(sim)
@@ -211,6 +227,10 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
   }
 
+  if (is.null(P(sim)$quotedSpread))
+    params(sim)[[currentModule(sim)]]$quotedSpread <- quotedSpreadDefault
+
+
   return(invisible(sim))
 }
 
@@ -230,15 +250,15 @@ Init <- function(sim) {
 
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together
-  propPineRas <- if (nlayers(sim$pineMap) > 1) sum(sim$pineMap) else sim$pineMap
-  mv <- maxValue(propPineRas)
+  mv <- maxValue(sim$pineMap)
+  propPineRas <- raster(sim$pineMap)
+  propPineRas[] <- if (mv > 1)
+    sim$pineMap[] <- sim$pineMap[] / 100 ## much faster than calc; ## TODO: allow different params per species
+  else
+    sim$pineMap[]
 
-  if (mv > 1)
-    propPineRas[] <- propPineRas[] / 100 ## much faster than calc; ## TODO: allow different params per species
-
-  nas <- is.na(propPineRas[]) & !is.na(sim$rasterToMatch[])
+  nas <- is.na(propPineRas[])# & !is.na(rasterToMatch[])
   propPineRas[nas] <- 0
-
 
   nams <- names(sim$massAttacksStack)
   rasTmplate <- raster(sim$massAttacksStack)
@@ -262,10 +282,10 @@ Init <- function(sim) {
     sim$climateSuitabilityMaps <- climateSuitabilityMaps
   }
   if (!compareRaster(sim$massAttacksStack,
-                sim$propPineRas,
-                sim$windDirStack,
-                sim$windSpeedStack,
-                sim$climateSuitabilityMaps))
+                     sim$propPineRas,
+                     sim$windDirStack,
+                     sim$windSpeedStack,
+                     sim$climateSuitabilityMaps))
     stop("The coarser resolution files need to be all the same resolution")
 
   options(opts)
@@ -287,12 +307,12 @@ Init <- function(sim) {
     #windSpeed = raster::extract(sim$windSpeedStack[[.BY[[1]]]], cbind(x, y)),
     #windDir = raster::extract(sim$windDirStack[[.BY[[1]]]], cbind(x, y)),
     #propPineRas = raster::extract(sim$propPineRas, cbind(x, y))
-    ),
-    by = "layerName"]
+  ),
+  by = "layerName"]
 
   # ids <- which(!is.na(sim$currentAttacks[]) | (sim$currentAttacks[] > 0))
   # mpb.sp <- raster::xyFromCell(sim$currentAttacks, cell = ids)
-# sim$massAttacksDT <- data.table(
+  # sim$massAttacksDT <- data.table(
   #   ID = ids[, "row"],
   #   layer = ids[, "col"],
   #   #X = mpb.sp[, 1],
@@ -385,19 +405,299 @@ Init <- function(sim) {
   return(invisible(sim))
 }
 
+Predict <- function(sim) {
+  objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
+  DEout <- readRDS(tail(objs, 1))
+  DEout <- readRDS(tail(objs, 2)[1])
+
+  p <- sim$pBest # gets the parameter names
+  p[] <- DEout$optim$bestmem # replace with values from disk object
+
+
+  DEout <- as.data.table(DEout$member$pop)
+  setnames(DEout, new = names(p))
+  DEout <- melt(DEout, measure = colnames(DEout), variable.name = "Parameter")
+
+  Plots(DEout, plotHistsOfDEoptimPars, title = "Parameter histograms from DEoptim",
+        filename = paste0("Histograms of parameters from DEoptim ", Sys.time()))
+
+
+  # Way to identify quantiles
+  if (FALSE) {
+    ll <- weibullShapeScale(p['meanDist'], p['sdDist']);
+    qweibull(0.99, shape = ll$shape, scale = ll$scale)
+  }
+
+  #########################################################
+  #################### PREDICT MAPS
+  #########################################################
+
+  opts2 <- options(reproducible.cacheSpeed = "fast")
+  on.exit(options(opts2))
+  # Browse[1]> fastdigest(quotedSpread)
+  # [1] "6ee73bef9a187c2404d856d22b7a426a"
+  sim$predictedDT <- Cache(predictQuotedSpread,
+                       massAttacksDT = sim$massAttacksDT,
+                       massAttacksStack = sim$massAttacksStack,
+                       windDirStack = sim$windDirStack,
+                       windSpeedStack = sim$windSpeedStack,
+                       propPineRas = sim$propPineRas,
+                       pineThreshold = 0.3,
+                       dispersalKernel = "Weibull",
+                       maxDistance = P(sim)$maxDistance,
+                       quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
+                       .cacheExtra = format(P(sim)$quotedSpread), # cache this instead
+                       p = p,
+                       omitArgs = "quotedSpread",
+                       subsampleFrom = subsampleFrom
+  )
+  sim$predictedStack <- Cache(stackFromDT, sim$massAttacksStack, sim$predictedDT)
+  #bb <- predictedStack$X2011[][propPineRas[] < 0.3]
+  #cc <- massAttacksStack$X2011[][propPineRas[] < 0.1]
+
+  lapply(seq(nlayers(sim$massAttacksStack)), function(x)
+    cor.test(sim$predictedStack[][, x], sim$massAttacksStack[][, x], use = "complete.obs"))
+
+  corByYr <- cor(sim$predictedStack[], sim$massAttacksStack[], use = "complete.obs")
+  (corByYrAvg <- mean(diag(corByYr)))
+
+  plotStack <- Cache(stacksForPlot, sim$massAttacksStack, sim$predictedStack, threshold = 55)
+
+  fnHash <- fastdigest(format(stacksPredVObs))
+  fn <- function(p, mas, ps, pp) {
+    stackPredVObs <- stacksPredVObs(mas, ps, pp, threshold = p[[1]])
+    2 - mean(stackPredVObs$ROCs$sumSensSpecAtThreshold)
+    # 1 - mean(stackPredVObs$ROCs$ROC)
+  }
+  p <- 10
+
+  availablePine <- rowSums(sim$massAttacksStack[], na.rm = TRUE)
+  whAttacked <- which(availablePine > 0)
+  availablePineMap <- raster(sim$massAttacksStack)
+  availablePineMap[whAttacked] <- 1
+  apmBuff <- Cache(raster::buffer, availablePineMap, width = 1e5)
+  apmBuff[sim$propPineRas[] == 0] <- NA
+
+
+  # cumulative maps
+  mam <- sim$massAttacksStack
+  for (lay in names(sim$massAttacksStack)) {
+    mam[[lay]][is.na(mam[[lay]][])] <- 0
+  }
+  ss <- sum(mam)
+  ss[] <- log(ss[] + 1)
+  # 3setColors(ss, n = 5) <- c("yellow", "orange" , "red", "purple", "blue")
+
+  # cumulative maps
+  pred <- sim$predictedStack
+  for (lay in names(pred)) {
+    pred[[lay]][is.na(pred[[lay]][])] <- 0
+  }
+  pp <- sum(pred)
+  pp[] <- log(pp[] + 1)
+
+
+  ##########################
+  ggplotStudyAreaFn <- function(absk, cols, studyArea, mam, pred, propPineMap) {
+    mam[mam[] == 0] <- NA
+    pred[pred[] < log(60 * 12)] <- NA
+    pred[] <- pred[] * 0.7
+
+    absksp <- sf::as_Spatial(absk)
+    propPineMap[propPineMap[] <= 0.05] <- NA
+    browser()
+
+    current.mode <- tmap_mode("plot")
+    # current.mode <- tmap_mode("view")
+
+    #t0 <- tm_basemap("OpenStreetMap") # only with tmap_mode("view")
+    #t5 <- tm_tiles("OpenStreetMap")
+    tmap_style("white")
+    brks <- c(0, 6, 8, 10, 12, 14)
+    t1 <- tm_shape(absk) + tm_polygons(alpha = 0)
+    t2 <- tm_shape(mam) + tm_raster(title = "Accumulated Damage", alpha = 0.8, palette = "YlOrRd",
+                                    style = "fixed", breaks = brks, legend.show = FALSE)
+    t3 <- tm_shape(propPineMap) + tm_raster(title = "Pine Cover (prop)", alpha = 0.6, palette = "Greens")
+    t3b <- t3 + tm_legend(show = FALSE)
+    t4 <- tm_shape(pred) + tm_raster(title = "MPB log(Attacked trees)", alpha = 0.8, palette = "YlOrRd", style = "fixed", breaks = brks)
+    tmam <- t3b + t2 + t1 + tm_layout(title = "Observed")
+    tpred <- t3 + t4 + t1  + tm_compass(type  = "4star", position = c("right", "top"), north = 10) + tm_layout(title = "Predicted")
+    tmap_arrange(tmam, tpred)
+    tmam + tpred
+  }
+
+  browser()
+  ggplotStudyAreaFn(sim$absk, "darkgreen", sf::st_as_sf(sim$studyArea), ss,
+                    pred = pp,
+                    propPineMap = sim$propPineRas)
+
+  system.time(optimOut <- Cache(optimize, f = fn, interval = c(0.001, 200),
+                                mas = sim$massAttacksStack, .cacheExtra = fnHash,
+                                ps = sim$predictedStack, pp = sim$propPineRas,
+                                tol = 0.001
+  ))
+
+  thresholdBest <- optimOut$minimum
+  browser()
+  stackPredVObs <- stacksPredVObs(sim$massAttacksStack, sim$predictedStack,
+                                  apmBuff, threshold = thresholdBest,
+                                  plot = TRUE)
+
+
+
+  mean(stackPredVObs$ROCs$ROC)
+  stackPredVObs$ROCs
+
+  X2011 <- sim$predictedStack$X2011
+  X2011gtThresh <- X2011
+  X2011pred <- X2011
+  X2011gtThresh[X2011 < thresholdBest] <- NA
+  X2011pred[sim$massAttacksStack$X2011[] > 0]
+  p0 <- levelplot(X2011, par.settings = GrTheme(brewer.pal(9, "Greys")))
+  p1 <- levelplot(X2011gtThresh, par.settings = RdBuTheme(region = brewer.pal(9, 'Greens')))
+  p2 <- levelplot(X2011gtThresh, par.settings = RdBuTheme(region = brewer.pal(9, 'Greens')))
+  p0 + p1
+
+  gg <- gplot(sim$predictedStack$X2011)
+
+
+
+
+  Plot(stackPredVObs$stk)
+
+  browser()
+
+  ss <- lapply(raster::unstack(stackPredVObs), function(ras) {
+    freqs <- table(ras[])
+    sensitivity <- freqs[3]/(sum(freqs[3], freqs[1]))
+    specificity <- freqs[4]/(sum(freqs[4], freqs[2]))
+    return(list(sensitivity = sensitivity, specificity = specificity))
+  })
+
+
+  browser()
+
+  # Edges
+  edgesPredicted <- sim$predictedStack
+  edgesPredicted[edgesPredicted < thresholdBest] <- NA
+  edgesPredicted <- raster::stack(edgesPredicted)
+  edgesList <- raster::unstack(edgesPredicted)
+  names(edgesList) <- names(edgesPredicted)
+  edgesCoords <- lapply(edgesList, function(edge) {
+    xys <- xyFromCell(edge, which(!is.na(edge[])))
+    xEdge <- quantile(xys[, "x"], 0.95)
+    yEdge <- quantile(xys[, "y"], 0.95)
+    list(EastEdge = xEdge, NorthEdge = yEdge)
+  })
+  edgesPredDT <- rbindlist(edgesCoords, idcol = "Year")
+  edgesPredDT[, type := "Prediction"]
+
+  edgesData <- sim$massAttacksStack
+  edgesData <- raster::stack(edgesData)
+  edgesDataList <- raster::unstack(edgesData)
+  names(edgesDataList) <- names(edgesData)
+  edgesDataCoords <- lapply(edgesDataList, function(edge) {
+    xys <- xyFromCell(edge, which(!is.na(edge[])))
+    xEdge <- quantile(xys[, "x"], 0.95)
+    yEdge <- quantile(xys[, "y"], 0.95)
+    list(EastEdge = xEdge, NorthEdge = yEdge)
+  })
+  edgesDataDT <- rbindlist(edgesDataCoords, idcol = "Year")
+  edgesDataDT[, type := "Data"]
+  setnafill(edgesPredDT, type = "locf", cols = c("EastEdge", "NorthEdge"))
+
+  edgesDT <- rbindlist(list(edgesDataDT, edgesPredDT))
+
+  edgesDTLong <- melt(edgesDT, measure = patterns("Edge"))
+  edgesDTLong[, value := c(NA, diff(value))/1e3, by = c("variable")]
+  edgesDTLong[, xy := gsub("Edge", "", variable)]
+  Plots(edgesDTLong, plotCentroidShift, title = "Predicted vs. Observed edge displacment each year")
+
+
+
+  # Centroids
+  centroidPredicted <- centroidChange(sim$predictedStack, propPineRas)
+  centroidPredicted[, variable := paste0("X", as.numeric(gsub("X", "", variable)) - 1)]
+  setnames(centroidPredicted, old = c("yAtMax", "xAtMax"), new = c("yPredicted", "xPredicted"))
+
+  centroidData <- centroidChange(sim$massAttacksStack, propPineRas)
+  setnames(centroidData, old = c("yAtMax", "xAtMax"), new = c("yData", "xData"))
+  centroids <- centroidData[centroidPredicted]
+
+  setnames(centroids, "variable", "Year")
+  centroidsLong <- melt(centroids, measure = patterns("Data|Pred"))
+  centroidsLong[, type := gsub("x|y", "", variable)]
+  centroidsLong[, xy := gsub("^(x|y).+", "\\1", variable)]
+  centroidsLong[, xy := ifelse(xy == "x", "East", "North")]
+  centroidsLong[, UTM := value]
+  centroidsLong[, value := c(NA, diff(value))/1e3, by = c("variable")]
+
+  Plots(centroidsLong, plotCentroidShift, title = "Predicted vs. Observed centroid displacment each year")
+
+  centroids[, EastObs := c(NA, diff(xData)/1e3)]
+  centroids[, NorthObs := c(NA, diff(yData)/1e3)]
+  centroids[, EastPred := c(NA, diff(xPredicted)/1e3)]
+  centroids[, NorthPred := c(NA, diff(yPredicted)/1e3)]
+  centroids <- na.omit(centroids, cols = "EastPred")
+  centroids[, FiveYrPd := rep(c(paste0(Year[1],"/",Year[5]), paste0(Year[6],"/",Year[10])), each = 5)]
+
+  centroids5Y <- centroids[, lapply(.SD, function(x) sum(x)), by = FiveYrPd,
+                           .SDcols = c("EastObs", "NorthObs", "EastPred", "NorthPred")]
+  centroids <- rbindlist(list(centroids, centroids5Y), fill = TRUE)
+  centroids[is.na(Year), Year := FiveYrPd]
+
+  centroids2 <- as.data.table(t(centroids[, list(NorthObs, NorthPred, EastObs, EastPred)]))
+  setnames(centroids2, centroids$Year)
+  centroids2 <- cbind(Year = c("NorthObs", "NorthPred", "EastObs", "EastPred"), centroids2)
+  displacementTable <- centroids2 %>%
+    gt() %>%
+    tab_spanner(
+      label = "Annual displacement (km/y)",
+      columns = grep(value = TRUE, "^X.{4,4}$", colnames(centroids2))
+    ) %>%
+    tab_spanner(
+      label = "Net displacement\n(km/5 y)",
+      columns = grep(value = TRUE, "^X.+/.+", colnames(centroids2))
+    )
+  gtsave(displacementTable, filename = file.path(outputPath(sim), "displacementTable.png"))
+
+
+  return(sim)
+
+
+}
 ### plotting
 plotFn <- function(sim) {
+  p <- sim$pBest
+
+  plotKernels(p)
+
+
+  par(mfrow = c(1,2))
+  plot(colMeans(sim$climateSuitabilityMaps[[names(sim$massAttacksStack)]][], na.rm = TRUE))
+  plot(colMeans(sim$massAttacksStack[[names(sim$massAttacksStack)]][], na.rm = TRUE))
+
+  ## Histograms showing that there is no relationship between where beetle is and
+  #  how much pine there is
+  par(mfrow = c(4,6));
+  for(i in 1:10/10) {
+    cc <- massAttacksStack$X2011[][propPineRas[] < i & propPineRas[] > (i - 0.1)];
+    hist(log(cc), xlim = c(-1, 10), breaks = 15,
+         main = paste0("Prop pine: ", i - 0.1, " to ", i), xlab = "log number attacked trees")
+  }
+
+
   r <- raster(sim$massAttacksStack[[1]]) ## use a template
-  atkMap <- amc::dt2raster(sim$massAttacksDT, r, "ATKTREES")
-  setColors(atkMap) <- RColorBrewer::brewer.pal(n = 9, name = "YlOrRd")
-  Plot(atkMap, title = "Simulated Attacks")
+  # atkMap <- amc::dt2raster(sim$massAttacksDT, r, "ATKTREES")
+  # setColors(atkMap) <- RColorBrewer::brewer.pal(n = 9, name = "YlOrRd")
+  # Plot(atkMap, title = "Simulated Attacks")
 
   return(invisible(sim))
 }
 
 ### spread
-dispersal2 <- function(quotedSpread, pineMap, studyArea, massAttacksDT, massAttacksStack,
-                       rasterToMatch, # massAttacksRas,
+dispersal2 <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, massAttacksStack,
+                       rasterToMatch, maxDistance, # massAttacksRas,
                        params, currentTime, bgSettlingProp, type, reqdPkgs,
                        windDirStack, windSpeedStack) {
 
@@ -410,78 +710,76 @@ dispersal2 <- function(quotedSpread, pineMap, studyArea, massAttacksDT, massAtta
   #
   # ## asymmetric spread (biased eastward)
   # # lodgepole pine and jack pine together
-  propPineRas <- if (nlayers(pineMap) > 1) sum(pineMap) else pineMap
   mv <- maxValue(propPineRas)
   #
   if (mv > 1)
     propPineRas[] <- propPineRas[] / 100 ## much faster than calc; ## TODO: allow different params per species
 
-  nas <- is.na(propPineRas[]) & !is.na(rasterToMatch[])
+  nas <- is.na(propPineRas[]) # & !is.na(rasterToMatch[])
   propPineRas[nas] <- 0
 
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
   advectionDir <- params$advectionDir
   advectionMag <- params$advectionMag
   omitPastPines <- FALSE # was TRUE ... but maybe bad because there are many that have multiple years
-  sdDist <- 1.2
   dispersalKernel <- "Weibull"
   # dispersalKernel <- "Exponential"
-  p <- do.call(c, params[c("meanDist", "advectionMag")])#, "advectionDir")])
-  p["meanDist"] <- 1e4 # Average distance per year -- in m
-  p["advectionMag"] <- 5e3 # Average distance of the asymmetry -- in m
-  #p["advectionDir"] <- 90
-  p["sdDist"] <- 1.2 # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
+  p <- do.call(c, params[c("meanDist", "advectionMag", "sdDist")])#, "advectionDir")])
+  # p["meanDist"] <- 1e4 # Average distance per year -- in m
+  # p["advectionMag"] <- 5e3 # Average distance of the asymmetry -- in m
+  ##p["advectionDir"] <- 90
+  sdDist <- p["sdDist"] # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
   #p["meanDistSD"] <- 20 # Interannual variation # not needed once we have wind and climate suitability
   #p["advectionDirSD"] <- 20
   # lower <- c(25000,  50,  0.9, 1.001)
   # upper <- c(65000, 2000, 2.5, 1.7)
-  lower <- c(25000,  50,  0.9)
-  upper <- c(65000, 2000, 2.5)
+  lower <- c(5000,  0.1,  0.5)
+  upper <- c(105000, 2000, 2.5)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
-  maxDistance <- 1e5
-  if (is.null(quotedSpread))
-    quotedSpread <- quotedSpreadDefault
   fitType <- "distanceFromEachPoint"
-  objsToExport <- setdiff(formalArgs("objFun"),
-                          c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
+  subsampleFrom <- NULL#3
   libPaths <- .libPaths()
-  objsToExport <- c("reqdPkgs", objsToExport, "objsToExport", "libPaths")
 
-  # RESAMPLE MAPS TO COARSER
-  # nams <- names(massAttacksStack)
-  # rasTmplate <- raster(massAttacksStack)
-  # rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
-  # massAttacksList <- raster::unstack(massAttacksStack)
-  # opts <- options(reproducible.cacheSpeed = "fast")
-  # on.exit(options(opts))
-  # mams <- raster::stack(
-  #   Cache(lapply, massAttacksList, function(mam)
-  #     aggregateRasByDT(mam, rasCoarse, fn = sum))
-  # )
-  # names(mams) <- names(massAttacksStack)
-  # massAttacksStack <- mams
-  # propPineRas <- Cache(aggregateRasByDT, propPineRas, rasCoarse, fn = mean)
-  # windDirStack <- Cache(aggregate, windDirStack, res(rasCoarse)[1]/res(windDirStack)[1])
-  # windSpeedStack <- Cache(aggregate, windSpeedStack, res(rasCoarse)[1]/res(windSpeedStack)[1])
-  # options(opts)
+  # Identify the objsToExport -- needs to be ALL the formalArgs of the objFun
+  #   however, don't pass ones that are passed manually at the DEoptim call
+  #   Generally, only pass "very small" objects in the DEoptim call. Large ones do this way.
+  objsToExport <- setdiff(formalArgs("objFun"),
+                          # The following are small and passed at the time of the DEoptim call
+                          c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
+  # need both the objsToExport vector, and the object called "objsToExport"
+  objsToExport <- c(objsToExport, "reqdPkgs", "objsToExport", "libPaths")
 
+  # put objsToExport into .GlobalEnv -- the DEoptim function gets all arguments from .GlobalEnv
   list2env(mget(objsToExport), envir = .GlobalEnv)
 
-  ips <- c("localhost", "10.20.0.184", #"10.20.0.97",
-           "10.20.0.220", "10.20.0.217") ## TODO: don't hardcode this. pass as param
+  # 213 appears slower than rest
+  ipsNum <- c(189, 184, 220, 213, 217, 97, 106)
+  ips <- paste0("10.20.0.", ipsNum)
+  # ips <- c("localhost", ips)
+  #ips <- c("10.20.0.184", "localhost", "10.20.0.220", "10.20.0.213", "10.20.0.217", "10.20.0.97") ## TODO: don't hardcode this. pass as param
+  #ips <-   rep(ips, c(29, 16, 20, 0, 16, 17, 13))
+  # ips <- rep(ips, c(16, 27, 25, 6, 16, 10))
+  #                c(19, 22, 24, 6, 19, 10)
+  #ips <- rep(ips, c(27, 16, 22, 19, 11, 5))
+  #print(length(ips))
   #adjustments <- c(1.25, 1.1, #0.8,
   #                 0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
   #ips <- c("10.20.0.106", "10.20.0.68", "10.20.0.213")
-  adjustments = c(0.9, 1.2, 0.8, 1.2)
-  if (isTRUE(type == "fit")) {
-    fn <- ".allObjs.rda"
-    numCoresNeeded <- 84 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
-    reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table", "purrr")), reqdPkgs, value = TRUE)
-    clusterIPs <- clusterSetup(workers = ips, objsToExport = objsToExport,
-                               packages = reqdPkgs, libPaths = libPaths, doSpeedTest = TRUE, fn = fn,
-                               numCoresNeeded = numCoresNeeded, adjustments = adjustments)
-    cl <- clusterSetup2(clusterIPs, filenameToLoad = fn, packages = reqdPkgs)
+  adjustments = 1#c(0.9, 2, 0.7, 2, 0.4, 0.4)
+  numCoresNeeded <- 110 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
+
+  # ips <- "10.20.0.213"
+  # adjustments = 1
+  # numCoresNeeded <- 3 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
+  reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table", "purrr")), reqdPkgs, value = TRUE)
+  if (isTRUE(type == "DEoptim")) {
+    cl <- clusterSetup(workers = ips, objsToExport = objsToExport,
+                       reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 1, # fn = fn,
+                       # quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
+                       #                                        "sp", "raster", "terra", "lwgeom"),
+                       #                                      repos = "https://cran.rstudio.com")),
+                       numCoresNeeded = numCoresNeeded, adjustments = adjustments)
     on.exit(try(stopCluster(cl)), add = TRUE)
     message("Starting DEoptim")
     stPre <- Sys.time()
@@ -492,9 +790,10 @@ dispersal2 <- function(quotedSpread, pineMap, studyArea, massAttacksDT, massAtta
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl,
                                                strategy = 6,
-                                               itermax = 200,
+                                               itermax = 50,
                                                NP = numCoresNeeded),
-                     fitType = fitType)
+                     fitType = fitType,
+                     subsampleFrom = subsampleFrom)
 
     saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
     sim2 <- get("sim", whereInStack("sim"))
@@ -504,85 +803,55 @@ dispersal2 <- function(quotedSpread, pineMap, studyArea, massAttacksDT, massAtta
     print(difftime(stPost, stPre))
     try(parallel::stopCluster(cl))
     browser()
+    sim$DEoptim <- DEoptim
 
   } else if (isTRUE(type == "runOnce")) {
     #profvis::profvis(
-      st1 <- system.time({
-        out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
-                      massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT)
-      })
+    st1 <- system.time({
+      out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
+                    massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT, subsampleFrom = subsampleFrom)
+    })
     #)
     print(st1)
   } else if (isTRUE(type == "optim")) {
-    browser()
-    cl <- parallel::makeForkCluster(5)
+    numCoresNeeded <- 5
+    ips <- "10.20.0.213"
+    cl <- clusterSetup(workers = ips, objsToExport = objsToExport,
+                                reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
+                                numCoresNeeded = numCoresNeeded)
+    on.exit(try(parallel::stopCluster(cl)), add = TRUE)
+    # cl <- parallel::makeForkCluster(5)
     stPre <- Sys.time()
+    # optimOut <- optim(fn = objFun, par = p,
     optimOut <- optimParallel::optimParallel(fn = objFun, par = p,
-                     lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
-                     upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
-                     reps = 1,
-                     method = "L-BFGS-B",
-                     quotedSpread = quotedSpread,
-                     control = list(trace = 3, factr = 1e6),
-                     parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE),
-                     #control = DEoptim.control(cluster = cl,
-                    #                           strategy = 6,
-                    #                           itermax = 120,
-                    #                           NP = numCoresNeeded),
-                     fitType = fitType)
+                                             lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
+                                             upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+                                             reps = 1,
+                                             method = "L-BFGS-B",
+                                             quotedSpread = quotedSpread,
+                                             control = list(trace = 3, factr = 1e6),
+                                             parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE),
+                                             #control = DEoptim.control(cluster = cl,
+                                             #                           strategy = 6,
+                                             #                           itermax = 120,
+                                             #                           NP = numCoresNeeded),
+                                             fitType = fitType)
+    try(parallel::stopCluster(cl))
     saveRDS(optimOut, file = file.path("outputs", paste0("optimOut_", format(stPre), ".rds")))
     stPost <- Sys.time()
 
   }
-  browser()
   objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
   DEout <- readRDS(tail(objs, 1))
-  p[] <- DEout$optim$bestmem[] # use [] to keep names
+  pBest <- p
+  pBest[] <- DEout$optim$bestmem[] # use [] to keep names
 
 
-  N1 <- 1e4
-
-  plotKernels(p)
-
-  #########################################################
-  #################### PREDICT MAPS
+  return(invisible(pBest))
   #########################################################
 
-  opts2 <- options(reproducible.cacheSpeed = "fast")
-  on.exit(options(opts2))
-  # Browse[1]> fastdigest(quotedSpread)
-  # [1] "6ee73bef9a187c2404d856d22b7a426a"
-  predictedDT <- Cache(predictQuotedSpread,
-                       massAttacksStack = massAttacksStack,
-                       windDirStack = windDirStack,
-                       windSpeedStack = windSpeedStack,
-                       propPineRas = propPineRas,
-                       dispersalKernel = "Weibull",
-                       maxDistance = maxDistance,
-                       quotedSpread = quotedSpread, # doesn't cache correctly
-                       quotedSpreadChar = format(quotedSpread), # cache this instead
-                       p = p,
-                       omitArgs = "quotedSpread"
-  )
-
-  predictedStack <- Cache(stackFromDT, massAttacksStack, predictedDT)
-
-  plotStack <- Cache(stacksForPlot, massAttacksStack, predictedStack, threshold = 0.5)
-
-  browser()
-  return(invisible(plotStack))
-  browser()
-  #########################################################
-  #########################################################
-
-  visualizeKernel(p, massAttacksStack, maxDistance = maxDistance)
+  # visualizeKernel(p, massAttacksStack, maxDistance = maxDistance)
   ###############################################
-
-  migrantsDT <- out[, list(NEWATKs = sum(abundSettled)), by = "pixels"]
-  massAttacksDTNew <- massAttacksDT[migrantsDT, on = c(ID = "pixels")]
-
-  # ! ----- STOP EDITING ----- ! #
-  return(invisible(massAttacksDTNew))
 }
 
 
@@ -640,112 +909,129 @@ aggregateRasByDT <- function(ras, newRas, fn = sum) {
 
 }
 
-clusterSetup <- function(workers, objsToExport, packages,
-                         libPaths, doSpeedTest = FALSE, envir = parent.frame(),
-                         fn = ".allObjs.rda", numCoresNeeded, adjustments = rep(1, length(workers))) {
-  message("Starting cluster with 1 core per machine -- install packages; copy objects; write to disk")
-  clSingle <- future::makeClusterPSOCK(workers = workers, revtunnel = TRUE)
-  on.exit(try(parallel::stopCluster(clSingle), silent = TRUE), add = TRUE)
-  # NumPopulations <- 118
+# clusterSetupSingles <- function(workers, objsToExport, reqdPkgs,
+#                          libPaths = .libPaths()[1], doSpeedTest = FALSE, envir = parent.frame(),
+#                          fn = ".allObjs.rda", numCorlesNeeded, adjustments = rep(1, length(workers))) {
+#
+#   message("Starting cluster with 1 core per machine -- install reqdPkgs; copy objects; write to disk")
+#   uniqueWorkers <- unique(workers)
+#   if (identical(workers, uniqueWorkers) && length(workers) < numCoresNeeded) {
+#
+#     clSingle <- future::makeClusterPSOCK(workers = uniqueWorkers, revtunnel = TRUE)
+#     on.exit(try(parallel::stopCluster(clSingle), silent = TRUE), add = TRUE)
+#     # NumPopulations <- 118
+#
+#     out2 <- determineClusters(clSingle = clSingle, doSpeedTest = doSpeedTest,
+#                               uniqueWorkers = uniqueWorkers, numCoresNeeded = numCoresNeeded,
+#                               adjustments = adjustments)
+#     reproducible::messageDF(out2)
+#
+#     clusterIPs <- rep(out2$.id, out2$cores)
+#   } else {
+#     clusterIPs <- if (length(workers) > numCoresNeeded)
+#       sample(workers, size = numCoresNeeded)
+#     else
+#       workers
+#   }
+#   # parallel::stopCluster(clSingle)
+#
+#   # clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
+#   clusterExport(clSingle, varlist = objsToExport, envir = envir)
+#   clusterExport(clSingle, varlist = c("fn", "reqdPkgs", "libPaths", "objsToExport"), envir = environment())
+#
+#   clusterEvalQ(clSingle, {
+#     if (any(!dir.exists(libPaths)))
+#       dir.create(libPaths[1], recursive = TRUE)
+#     .libPaths(libPaths)
+#     ## set CRAN repos; use binary linux packages if on Ubuntu
+#     local({
+#       options(Ncpus = parallel::detectCores() / 2)
+#       options("repos" = c(CRAN = "https://cran.rstudio.com"))
+#
+#       if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
+#         .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
+#         .user.agent <- paste0(
+#           "R/", getRversion(), " R (",
+#           paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
+#           ")"
+#         )
+#         options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
+#                                         .os.version, "/latest")))
+#         options(HTTPUserAgent = .user.agent)
+#       }
+#     })
+#
+#     if (!suppressWarnings(require("Require"))) {
+#       install.packages("Require")
+#     }
+#     # install.packages(c("rgdal", "rgeos", "sf", "sp", "raster", "terra", "lwgeom"), repos = "https://cran.rstudio.com")
+#     suppressMessages(Require::Require(reqdPkgs, install = TRUE, require = FALSE))
+#     save(list = objsToExport, file = fn)
+#   })
+#   parallel::stopCluster(clSingle)
+#
+#   return(clusterIPs)
+# }
 
-  if (isTRUE(doSpeedTest)) {
-    message("testing speed on each to estimate number cores to use")
-    out <- clusterEvalQ(clSingle, {
-      ss <- system.time({
-        for (i in 1:10000) rnorm(1e4)
-      })
-      data.table::data.table(elapsed = ss[3], trueCores = parallel::detectCores())
-    })
-  } else {
-    out <- clusterEvalQ(clSingle, {
-      data.table::data.table(elapsed = 1, trueCores = parallel::detectCores())
-    })
-  }
-
-  # parallel::clusterEvalQ(clSingle, system("pkill -f workRSOCK"))
-  names(out) <- workers
-  out2 <- rbindlist(out, idcol = TRUE)
-  relSpeed <- out2$trueCores/out2$elapsed*numCoresNeeded
-  relSpeed <- relSpeed/numCoresNeeded
-  relSpeed <- relSpeed/max(relSpeed)
-  out2[, relSpeed := relSpeed]
-  nonHTcores <- out2$trueCores/2
-  out2[, nonHTcores := nonHTcores]
-  sumNonHTcores <- sum(nonHTcores)
-  # needHTcores <- max(numCoresNeeded, numCoresNeeded - sumNonHTcores)
-
-  out2[, cores := round(nonHTcores * adjustments / max(adjustments))]
-
-  # Increase ncores upwards
-  m <- 0
-  while (sum(out2$cores) < numCoresNeeded) {
-    m <- ((m + 1) - 1) %% NROW(out2) + 1
-    out2[m, cores := cores + relSpeed]
-  }
-  # Decrease down to 1 each
-  out2[, cores := ceiling(cores)]
-  m <- 0
-  set(out2, NULL, "cores", as.numeric(out2$cores))
-  while ((sum(floor(out2$cores)) > numCoresNeeded) && any(out2$cores > 1)) {
-    m <- ((m + 1) - 1) %% NROW(out2) + 1
-    if (out2[m,]$cores > 1) {
-      maxC <- max(out2$cores)
-      out2[m, cores := cores - 1]
-    }
-  }
-  # set(out2, NULL, "cores", floor(out2$cores))
-  # Decrease down to 0 or 1 each
-  m <- 0
-  while (sum(out2$cores) > numCoresNeeded && any(out2$cores > 0)) {
-    m <- ((m + 1) - 1) %% NROW(out2) + 1
-    if (out2[m,]$cores > 0) {
-      out2[m, cores := cores - 1]
-    }
-  }
-
-  reproducible::messageDF(out2)
-
-  clusterIPs <- rep(out2$.id, out2$cores)
-  # parallel::stopCluster(clSingle)
-
-  # clSingle <- future::makeClusterPSOCK(workers = unique(clusterIPs), revtunnel = TRUE)
-  clusterExport(clSingle, varlist = objsToExport, envir = envir)
-  clusterExport(clSingle, varlist = c("fn", "packages", "libPaths", "objsToExport"), envir = environment())
-  clusterEvalQ(clSingle, {
-    if (any(!dir.exists(libPaths)))
-      dir.create(libPaths[1], recursive = TRUE)
-    .libPaths(libPaths)
-    ## set CRAN repos; use binary linux packages if on Ubuntu
-    local({
-      options(Ncpus = parallel::detectCores() / 2)
-      options("repos" = c(CRAN = "https://cran.rstudio.com"))
-
-      if (Sys.info()["sysname"] == "Linux" && grepl("Ubuntu", utils::osVersion)) {
-        .os.version <- strsplit(system("lsb_release -c", intern = TRUE), ":\t")[[1]][[2]]
-        .user.agent <- paste0(
-          "R/", getRversion(), " R (",
-          paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"]),
-          ")"
-        )
-        options(repos = c(CRAN = paste0("https://packagemanager.rstudio.com/all/__linux__/",
-                                        .os.version, "/latest")))
-        options(HTTPUserAgent = .user.agent)
-      }
-    })
-
-    if (!suppressWarnings(require("Require"))) {
-      install.packages("Require")
-    }
-
-    suppressMessages(Require::Require(packages, install = TRUE, require = FALSE))
-    save(list = objsToExport, file = fn)
-  })
-  parallel::stopCluster(clSingle)
-  return(clusterIPs)
-  #clOut <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
-  #return(clOut)
-}
-
+# determineClusters <- function(clSingle, doSpeedTest, uniqueWorkers, numCoresNeeded, adjustments) {
+#
+#   if (isTRUE(doSpeedTest) && length(unique(workers)) > 1) {
+#     message("testing speed on each to estimate number cores to use")
+#     out <- clusterEvalQ(clSingle, {
+#       ss <- system.time({
+#         for (i in 1:10000) rnorm(1e4)
+#       })
+#       data.table::data.table(elapsed = ss[3], trueCores = parallel::detectCores())
+#     })
+#   } else {
+#     out <- clusterEvalQ(clSingle, {
+#       data.table::data.table(elapsed = 1, trueCores = parallel::detectCores())
+#     })
+#   }
+#
+#   # parallel::clusterEvalQ(clSingle, system("pkill -f workRSOCK"))
+#   names(out) <- uniqueWorkers
+#   out2 <- rbindlist(out, idcol = TRUE)
+#   relSpeed <- out2$trueCores/out2$elapsed*numCoresNeeded
+#   relSpeed <- relSpeed/numCoresNeeded
+#   relSpeed <- relSpeed/max(relSpeed)
+#   out2[, relSpeed := relSpeed]
+#   nonHTcores <- out2$trueCores/2
+#   out2[, nonHTcores := nonHTcores]
+#   sumNonHTcores <- sum(nonHTcores)
+#   # needHTcores <- max(numCoresNeeded, numCoresNeeded - sumNonHTcores)
+#
+#   out2[, cores := round(nonHTcores * adjustments / max(adjustments))]
+#
+#   # Increase ncores upwards
+#   m <- 0
+#   while (sum(out2$cores) < numCoresNeeded) {
+#     m <- ((m + 1) - 1) %% NROW(out2) + 1
+#     out2[m, cores := cores + relSpeed]
+#   }
+#   # Decrease down to 1 each
+#   out2[, cores := ceiling(cores)]
+#   m <- 0
+#   set(out2, NULL, "cores", as.numeric(out2$cores))
+#   while ((sum(floor(out2$cores)) > numCoresNeeded) && any(out2$cores > 1)) {
+#     m <- ((m + 1) - 1) %% NROW(out2) + 1
+#     if (out2[m,]$cores > 1) {
+#       maxC <- max(out2$cores)
+#       out2[m, cores := cores - 1]
+#     }
+#   }
+#   # set(out2, NULL, "cores", floor(out2$cores))
+#   # Decrease down to 0 or 1 each
+#   m <- 0
+#   while (sum(out2$cores) > numCoresNeeded && any(out2$cores > 0)) {
+#     m <- ((m + 1) - 1) %% NROW(out2) + 1
+#     if (out2[m,]$cores > 0) {
+#       out2[m, cores := cores - 1]
+#     }
+#   }
+#
+#   return(out2)
+# }
 
 grow <- function(sim) {
   ## determine the actual growth based on the actual number of attacked trees/ha
@@ -755,8 +1041,6 @@ grow <- function(sim) {
   return(invisible(sim))
 }
 
-# clOut= clusterSetup(workers = ips[1], numCoresNeeded = 1,
-#                     objsToExport = c("ips"), packages = "reproducible", libPaths= .libPaths()[1])
 
 hist.DEoptim <- function(DEobj, paramNames) {
   dt <- as.data.table(DEobj$member$pop)
@@ -778,44 +1062,57 @@ summary.DEoptim <- function(DEobj, title) {
   cat(paste("Best params: ", paste(round(DEobj$optim$bestmem, 2), collapse = ", "), "\n"))
 }
 
-clusterSetup2 <- function(ips, packages, filenameToLoad) {
-  message("Starting cluster with all cores per machine")
-  cl <- future::makeClusterPSOCK(ips, revtunnel = TRUE)
-  # cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
-  # on.exit(try(parallel::stopCluster(cl)), add = TRUE)
-  clusterExport(cl, varlist = c("filenameToLoad", "packages"), envir = environment())
-  st <- system.time(clusterEvalQ(cl, {
-    load(file = filenameToLoad, envir = .GlobalEnv)
-    .libPaths(libPaths)
-    suppressMessages(
-      Require::Require(packages, install = FALSE)
-    )
-  }))
-  st <- system.time(clusterEvalQ(cl, {
-    try(unlink(filenameToLoad), silent = TRUE)
-  }))
-
-  return(cl)
-}
+# clusterSetup <- function(workers, objsToExport, reqdPkgs,
+#                          libPaths = .libPaths()[1],
+#                          doSpeedTest = FALSE, envir = parent.frame(),
+#                          fn = ".allObjs.rda", numCoresNeeded = ceiling(detectCores() * 0.8),
+#                          adjustments = rep(1, length(workers))) {
+#   clusterIPs <- clusterSetupSingles(workers = workers, objsToExport = objsToExport,
+#                              reqdPkgs = reqdPkgs, fn = fn, libPaths = libPaths, doSpeedTest = doSpeedTest,
+#                              numCoresNeeded = numCoresNeeded)#, adjustments = adjustments)
+#
+#   message("Starting cluster with all cores per machine")
+#   cl <- future::makeClusterPSOCK(clusterIPs, revtunnel = TRUE)
+#   # cl <- future::makeClusterPSOCK(workers = clusterIPs, revtunnel = TRUE)
+#   # on.exit(try(parallel::stopCluster(cl)), add = TRUE)
+#   clusterExport(cl, varlist = c("fn", "reqdPkgs"), envir = environment())
+#   st <- system.time(clusterEvalQ(cl, {
+#     load(file = fn, envir = .GlobalEnv)
+#     .libPaths(libPaths)
+#     suppressMessages(
+#       Require::Require(reqdPkgs, install = FALSE)
+#     )
+#   }))
+#   st <- system.time(clusterEvalQ(cl, {
+#     try(unlink(fn), silent = TRUE)
+#   }))
+#
+#   return(cl)
+# }
 
 plotKernels <- function(p, reps = 10) {
+  if ( (is.na(p["meanDistSD"])))
+    reps = 1
   nrows <- max(1, floor(sqrt(reps + 1)))
   ncols <- max(1, ceiling((reps + 1)/nrows))
   par(mfrow = c(nrows, ncols))
   if (is.null(names(p))) stop("p must be named and have these 3: meanDist, sdDist, meanDistSD")
   for (i in 1:reps) {
-    meanDist <- rlnorm(1, log(p["meanDist"]), log(p["meanDistSD"]))
+    meanDist <- p["meanDist"]
+    if (!is.na(p["meanDistSD"]))
+      meanDist <- rlnorm(1, log(p["meanDist"]), log(p["meanDistSD"]))
+
     sdDist = p["sdDist"]
+    shapeScale <- weibullShapeScale(meanDist = meanDist, sdDist = sdDist)
+    # mn <- (meanDist)
+    # sd <- mn/sdDist # 0.8 to 2.0 range
+    # shape <- (sd/mn)^(-1.086)
+    # scale <- mn/exp(lgamma(1 + 1/shape))
 
-    mn <- (meanDist)
-    sd <- mn/sdDist # 0.8 to 2.0 range
-    shape <- (sd/mn)^(-1.086)
-    scale <- mn/exp(lgamma(1 + 1/shape))
-
-    ww <- rweibull(1e4, shape = shape, scale = scale)
+    ww <- rweibull(1e4, shape = shapeScale$shape, scale = shapeScale$scale)
     hist(ww, xlim = c(0, 14e4), main = "", xlab = "Distance (m) from source")
     abline(v = meanDist, col = "red")
-    abline(v = p[[1]], col = "green")
+    abline(v = p[["meanDist"]], col = "green")
   }
   plot(type = "n", x = 1:10, axes = F, xlab = "", ylab = "")
   legend(x = 2, y = 8, col = c("red", "green"), lty= 1,
@@ -826,13 +1123,10 @@ plotKernels <- function(p, reps = 10) {
 
 kernelFn <- function(meanDist, sdDist, dispersalKernel, dist) {
   if (grepl("Weibull", dispersalKernel)) {
-    mn <- (meanDist)
-    sd <- mn/sdDist # 0.8 to 2.0 range
-    shape <- (sd/mn)^(-1.086)
-    scale <- mn/exp(lgamma(1+1/shape))
+    shapeScale <- weibullShapeScale(meanDist, sdDist)
 
     if (grepl("Weibull", dispersalKernel)) {
-      prob <- dweibull(dist, scale = scale, shape = shape)
+      prob <- dweibull(dist, scale = shapeScale$scale, shape = shapeScale$shape)
     }
 
     infs <- is.infinite(prob)
@@ -843,6 +1137,14 @@ kernelFn <- function(meanDist, sdDist, dispersalKernel, dist) {
 
   }
   prob
+}
+
+weibullShapeScale <- function(meanDist, sdDist) {
+  mn <- (meanDist)
+  sd <- mn/sdDist # 0.8 to 2.0 range
+  shape <- (sd/mn)^(-1.086)
+  scale <- mn/exp(lgamma(1+1/shape))
+  return(list(scale = scale, shape = shape))
 }
 
 
@@ -899,6 +1201,118 @@ stacksForPlot <- function(massAttacksStack, predictedStack, threshold = 1) {
   }
   names(stk) <- paste0("pred", yrNamesPlus1)
   stk[which(stk[] == 0)] <- NA
-  stk
+  raster::stack(stk)
 }
 
+
+stacksPredVObs <- function(massAttacksStack, predictedStack, propPineMap, threshold = 10, plot.it = FALSE) {
+  yrNames <- names(massAttacksStack)
+  yrNamesPlus1 <- yrNamesPlus1(yrNames)
+  stk <- raster::stack()
+  ROCs <- list()
+  if (isTRUE(plot.it)) {
+    numR <- floor(sqrt(length(yrNames)))
+    par(mfrow = c(numR, ceiling(length(yrNames)/numR)))
+  }
+  for (lay in seq(yrNames)) {
+
+    preds <- predictedStack[[yrNamesPlus1[lay]]][]
+    # preds[preds < threshold] <- 0
+    whHasVal <- which(!is.na(preds) |
+            !is.na(massAttacksStack[[lay]][]) |
+            propPineMap[] > 0)
+    preds[is.na(preds)] <- 0
+
+    # setColors(predictedStack[[yrNamesPlus1[lay]]], 8) <- "Reds"
+    Both <- raster(massAttacksStack[[lay]])
+    best <- raster(Both)
+    # whCA <- which(!is.na(massAttacksStack[[yrNamesPlus1[lay]]][]))
+    Both[] <- 0
+    # Both[whCA] <- 1
+    if (yrNamesPlus1[lay] %in% names(massAttacksStack)) {
+      whNY <- which(!is.na(massAttacksStack[[yrNamesPlus1[lay]]][]))
+      Both[whNY] <- Both[whNY] + 1
+    }
+    whPM <- which(!is.na(predictedStack[[yrNamesPlus1[lay]]][]) &
+                    predictedStack[[yrNamesPlus1[lay]]][] > 0)
+    Both[whPM] <- Both[whPM] + 2
+    Both[propPineMap[] > 0 & (is.na(Both[]) | Both[] == 0) ] <- 4
+    levels(Both) <- data.frame(ID = 1:4,
+                               Label = c("Obs", "Pred", "Pred&Obs", "Neither"))
+    setColors(Both, n = 4) <- "Set2"
+    Both@legend@colortable[1:4] <- c("yellow", "blue", "green", "purple")
+
+    dt <- data.table(pred = preds[whHasVal], outcome = Both[][whHasVal])
+    dt[, Attacked := ifelse(outcome %in% c(1, 3), 1, 0)]
+    dt <- setorderv(dt, c("pred", "Attacked"), order = c(-1, -1))
+    dt <- dt[pred > 0]
+    dt[, AttackedSum := cumsum(Attacked)]
+    dt[, NoAttackSum := cumsum(Attacked == 0)]
+    if (!all(dt$Attacked == 0)) {
+      dt[, Sens := AttackedSum / max(AttackedSum, na.rm = TRUE)]
+      dt[, OneMinusSpec := NoAttackSum / max(NoAttackSum)]
+      ROCs[[lay]] <- data.table(year = yrNamesPlus1[lay],
+                                bestAnnualThreshold = dt$pred[which.max(dt$Sens + (1 - dt$OneMinusSpec))],
+                                threshold = threshold,
+                                sumSensSpecAtThreshold = (dt$Sens + (1 - dt$OneMinusSpec))[which(dt$pred < threshold)[1]],
+                                sumSensSpecAtBest = max(dt$Sens + (1 - dt$OneMinusSpec)),
+                                ROC = sum(dt$Sens)/NROW(dt))
+      if (isTRUE(plot.it)) {
+        plot(dt$OneMinusSpec, dt$Sens, type = "l", main = yrNamesPlus1[lay])
+        abline(a = 0, b = 1, lty = "dashed")
+        print(paste("year: ", yrNamesPlus1[lay],", threshold: ", threshold, ", ROC: ", round(ROCs[[lay]]$ROC, 2)))
+      }
+    }
+    stk <- addLayer(stk, Both)
+
+  }
+  names(stk) <- paste0("pred", yrNamesPlus1)
+  stk[which(stk[] == 0)] <- NA
+  list(stk = raster::stack(stk), ROCs = rbindlist(ROCs))
+}
+
+
+centroidChange <- function(stk, propPineRas) {
+  mats <- xyFromCell(stk, cell = seq(ncell(stk)))
+  masDT <- as.data.table(stk[])
+  bb <- data.table(propPine = propPineRas[], mats, masDT, pixel = seq(ncell(stk)))
+  cc <- melt(bb, measure.vars = patterns("^X"), value.name = "NumAttackedTrees")
+  cc <- cc[!is.na(NumAttackedTrees)]
+  cc[, `:=`(sumByX = sum(NumAttackedTrees, na.rm = TRUE)),
+     by = c("x", "variable")]
+  cc[, `:=`(sumByY = sum(NumAttackedTrees, na.rm = TRUE)),
+     by = c("y", "variable")]
+  xs <- cc[, .SD[1], by = c("x", "variable")]
+  ys <- cc[, .SD[1], by = c("y", "variable")]
+  setkeyv(xs, c("variable", "x", "y"))#; setkey(uniX, "x")
+  setkeyv(ys, c("variable", "x", "y"))#; setkey(uniX, "x")
+  keepsY <- c("variable", "propPine", "x", "sumByX")
+  keepsX <- c("variable", "propPine", "y", "sumByY")
+  setkeyv(xs, c("variable", "y"))#; setkey(uniX, "x")
+  setkeyv(ys, c("variable", "x"))#; setkey(uniX, "x")
+  ys <- unique(ys[, ..keepsY], by = c("x", "variable"))
+  xs <- unique(xs[, ..keepsX], by = c("y", "variable"))
+  ys[, cumsumSumByX := cumsum(sumByX), by = c("variable")]
+  xs[, cumsumSumByY := cumsum(sumByY), by = c("variable")]
+  yAtMax <- xs[, list(yAtMax = y[max(which(cumsumSumByY < (max(cumsumSumByY)/2) ))]), by = "variable"]
+  xAtMax <- ys[, list(xAtMax = x[max(which(cumsumSumByX < (max(cumsumSumByX)/2) ))]), by = "variable"]
+  centroids <- yAtMax[xAtMax]
+  centroids
+}
+
+plotCentroidShift <- function(centroids, title) {
+  ggplot(centroids[], aes(x = Year, y = value, group = xy, color = type)) +
+    geom_point() +
+    facet_grid(vars(xy), scales = "free_y") +
+    ggplot2::theme_bw() +
+    ggtitle(title)
+}
+
+plotHistsOfDEoptimPars <- function(DEout, title) {
+  (paramHists <- DEout %>%
+    ggplot( aes(x=value, fill=Parameter)) +
+    geom_histogram() +# color="#e9ecef", alpha=0.6, position = 'identity') +
+    facet_grid(. ~ Parameter, scales = "free") +
+    theme_bw() +
+    ggtitle(title))
+}
