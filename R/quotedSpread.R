@@ -22,10 +22,16 @@ quotedSpreadDefault <- quote({
 
 
 #' @param massAttacksStack A rasterStack object with maps of number of attacked trees per pixel.
-predictQuotedSpread <- function(massAttacksStack, # startYears, atksKnownNextYr,
+predictQuotedSpread <- function(massAttacksDT, massAttacksStack, # startYears, atksKnownNextYr,
                                 dispersalKernel = "Weibull",
-                                propPineRas, maxDistance, quotedSpread, p,
+                                propPineRas, pineThreshold = 0.3, maxDistance, quotedSpread, p,
                                 windDirStack, windSpeedStack, ...) {
+  if (!compareRaster(massAttacksStack,
+                     propPineRas,
+                     windDirStack,
+                     windSpeedStack))
+    stop("The coarser resolution files need to be all the same resolution")
+
   nams <- intersect(names(massAttacksStack), names(windDirStack))
   # nams <- names(massAttacksStack)
   names(nams) <- nams
@@ -39,16 +45,23 @@ predictQuotedSpread <- function(massAttacksStack, # startYears, atksKnownNextYr,
 
   # When we are in "predict mode", we don't know the attacks next year ...
   #   so we supply a map of pine
-  whTos <- which(propPineRas[] >= 0.3)
+  whTos <- which(propPineRas[] >= pineThreshold)
   atksKnownNextYr <- data.table::data.table(pixels = whTos)
 
   out22 <- mcMap(nam = nams,
-                 massAttacksRas = massAttacksList,
+                 # massAttacksRas = massAttacksList,
                  windSpeedRas = windSpeedList,
                  windDirRas = windDirList,
+                 MoreArgs = list(massAttacksDT),
                  mc.cores = length(nams),
-                 function(nam, massAttacksRas, windDirRas, windSpeedRas) {
+                 function(nam, massAttacksDT, windDirRas, windSpeedRas) {
+                   layerName1 <- names(windDirRas)
+                   massAttacksDTThisYr <- massAttacksDT[layerName %in% layerName1]
+
+                   massAttacksRas <- raster(windDirRas)
+                   massAttacksRas[massAttacksDTThisYr$pixel] <- massAttacksDTThisYr$greenTreesYr_t # note green trees
                    starts <- which(massAttacksRas[] > 0)
+
                    if (length(starts) && length(whTos)) {
                      message("Predicting ", nam)
                      out <- lapply(seq_len(reps), function(rep)
