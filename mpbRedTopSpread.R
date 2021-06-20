@@ -24,7 +24,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@cluster (>= 1.0.4.9019)",
                   "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
-                  "PredictiveEcology/mpbutils (>= 0.1.2)", "purrr",
+                  "PredictiveEcology/mpbutils (>= 0.1.3)", "purrr",
                   "quickPlot", "raster", "RColorBrewer",
                   "PredictiveEcology/reproducible@DotsBugFix (>= 1.2.7.9009)",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)"),
@@ -93,6 +93,9 @@ defineModule(sim, list(
     createsOutput("propPineRas", "RasterLayer",
                   paste("Proportion (not percent) cover map of *all* pine. This will",
                         " be the pixel-based sum if there are more than one layer")),
+    createsOutput("thresholdBest", "numeric",
+                  paste("The number of predicted attacks (post dispersal) per pixel below which ",
+                        "it can be considered 'no attack'"))
   )
 ))
 
@@ -106,24 +109,45 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- Init(sim)
 
            # schedule future event(s)
-           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "grow", eventPriority = 4.5)
-           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
-           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "predict", 6.5)
-           # sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "explore", 7.5)
-           sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", 7.5)
-           sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save", .last())
+           if (isTRUE("fit" %in% P(sim)$type)) {
+             sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "growFit", eventPriority = 2.5)
+             sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalFit", eventPriority = 3.5)
+           }
+           if (isTRUE("validate" %in% P(sim)$type)) {
+             sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "validate", 4.5)
+           }
+           if (isTRUE("predict" %in% P(sim)$type)) {
+             sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
+           }
+           # sim <- scheduleEvent(sim, P(sim)$.plotInitialTime, "mpbRedTopSpread", "plot", 7.5)
+           # sim <- scheduleEvent(sim, P(sim)$.saveInitialTime, "mpbRedTopSpread", "save", .last())
          },
-         "grow" = {
-           # do stuff for this event
-           sim <- grow(sim)
+         "growFit" = {
+           sim$massAttacksDT <- grow(sim$massAttacksDT, P(sim)$dataset,
+                                     sim$massAttackesStack, mod$growthData)
+         },
+         "growPredict" = {
+           if (is.null(sim$pBest)) {
+             objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
+             DEout <- readRDS(tail(objs, 1))
+             DEout <- readRDS(objs[16])
+             sim$pBest <- do.call(c, P(sim)[c("meanDist", "advectionMag", "sdDist")])#, "advectionDir")])
+             sim$pBest[] <- DEout$optim$bestmem # replace with values from disk object
+           }
+           sim$massAttacksDTforPredict <- growPredict(sim)
 
-           # schedule future event(s)
            ## growth needs to happen after spread:
-           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "grow", eventPriority = 5.5)
+           sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalPredict", eventPriority = 5.5)
          },
-         "dispersal" = {
+         "dispersalPredict" = {
+           sim$predictedDT <- dispersalPredict(sim)
+           sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
+           # sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
+         },
+
+         "dispersalFit" = {
            # The outputs for this are saved to disk ... so no "return" sim
-           sim$pBest <- dispersal2(quotedSpread = P(sim)$quotedSpread,
+           sim$pBest <- dispersalFit(quotedSpread = P(sim)$quotedSpread,
                              propPineRas = sim$propPineRas, studyArea = sim$studyArea,
                              massAttacksDT = sim$massAttacksDT,
                              massAttacksStack = sim$massAttacksStack,
@@ -142,8 +166,8 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            # sim <- dispersal(sim)
            # sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
          },
-         "predict" = {
-           Predict(sim)
+         "validate" = {
+           Validate(sim)
          },
          "plot" = {
            sim <- plotFn(sim)
@@ -310,6 +334,7 @@ Init <- function(sim) {
   ),
   by = "layerName"]
 
+  sim$predictedDT <- sim$massAttacksDT[0]
   # ids <- which(!is.na(sim$currentAttacks[]) | (sim$currentAttacks[] > 0))
   # mpb.sp <- raster::xyFromCell(sim$currentAttacks, cell = ids)
   # sim$massAttacksDT <- data.table(
@@ -405,97 +430,154 @@ Init <- function(sim) {
   return(invisible(sim))
 }
 
-Predict <- function(sim) {
-  objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
-  DEout <- readRDS(tail(objs, 1))
-  DEout <- readRDS(tail(objs, 2)[1])
-
-  p <- sim$pBest # gets the parameter names
-  p[] <- DEout$optim$bestmem # replace with values from disk object
-
-
-  DEout <- as.data.table(DEout$member$pop)
-  setnames(DEout, new = names(p))
-  DEout <- melt(DEout, measure = colnames(DEout), variable.name = "Parameter")
-
-  Plots(DEout, plotHistsOfDEoptimPars, title = "Parameter histograms from DEoptim",
-        filename = paste0("Histograms of parameters from DEoptim ", Sys.time()))
-
-
-  # Way to identify quantiles
-  if (FALSE) {
-    ll <- weibullShapeScale(p['meanDist'], p['sdDist']);
-    qweibull(0.99, shape = ll$shape, scale = ll$scale)
-  }
-
-  #########################################################
-  #################### PREDICT MAPS
-  #########################################################
-
-  opts2 <- options(reproducible.cacheSpeed = "fast")
-  on.exit(options(opts2))
-  # Browse[1]> fastdigest(quotedSpread)
-  # [1] "6ee73bef9a187c2404d856d22b7a426a"
-  sim$predictedDT <- Cache(predictQuotedSpread,
-                       massAttacksDT = sim$massAttacksDT,
+dispersalPredict <- function(sim) {
+  if (is.null(sim$thresholdBest))
+    sim$thresholdBest <- 70
+  predictedDT <- Cache(predictQuotedSpread,
+                       massAttacksDT = sim$massAttacksDTforPredict,
                        massAttacksStack = sim$massAttacksStack,
                        windDirStack = sim$windDirStack,
                        windSpeedStack = sim$windSpeedStack,
                        propPineRas = sim$propPineRas,
                        pineThreshold = 0.3,
                        dispersalKernel = "Weibull",
+                       clNumber = 12,
                        maxDistance = P(sim)$maxDistance,
                        quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
                        .cacheExtra = format(P(sim)$quotedSpread), # cache this instead
-                       p = p,
-                       omitArgs = "quotedSpread",
-                       subsampleFrom = subsampleFrom
+                       p = sim$pBest,
+                       omitArgs = "quotedSpread"
   )
-  sim$predictedStack <- Cache(stackFromDT, sim$massAttacksStack, sim$predictedDT)
-  #bb <- predictedStack$X2011[][propPineRas[] < 0.3]
-  #cc <- massAttacksStack$X2011[][propPineRas[] < 0.1]
 
-  lapply(seq(nlayers(sim$massAttacksStack)), function(x)
-    cor.test(sim$predictedStack[][, x], sim$massAttacksStack[][, x], use = "complete.obs"))
+  predictedDT <- predictedDT[val > sim$thresholdBest]
+  predictedDT[, val := val/2]
+  predictedDT[, `:=`(
+    pixel = cellFromXY(sim$massAttacksStack, cbind(x, y)),
+    layerName = paste0("X", as.numeric(gsub("X", "", Year)) + 1)
+  )]
+  predictedDT[, CLIMATE := sim$climateSuitabilityMaps[[unique(Year)]][pixel]]
+  setnames(predictedDT, "val", "ATKTREES")
+  return(rbindlist(list(sim$predictedDT, predictedDT), use.names = TRUE, fill = TRUE))
+}
+Validate <- function(sim) {
+  objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
+  DEout <- readRDS(tail(objs, 1))
+  DEout <- readRDS(tail(objs, 2)[1])
 
-  corByYr <- cor(sim$predictedStack[], sim$massAttacksStack[], use = "complete.obs")
-  (corByYrAvg <- mean(diag(corByYr)))
+  ROCList <- list()
+  for (iii in 16) {
+    DEout <- readRDS(objs[iii])
 
-  plotStack <- Cache(stacksForPlot, sim$massAttacksStack, sim$predictedStack, threshold = 55)
+    if (length(DEout$optim$bestmem) != 3) next
+    p <- sim$pBest # gets the parameter names
+    p[] <- DEout$optim$bestmem # replace with values from disk object
 
-  fnHash <- fastdigest(format(stacksPredVObs))
-  fn <- function(p, mas, ps, pp) {
-    stackPredVObs <- stacksPredVObs(mas, ps, pp, threshold = p[[1]])
-    2 - mean(stackPredVObs$ROCs$sumSensSpecAtThreshold)
-    # 1 - mean(stackPredVObs$ROCs$ROC)
+
+    DEout <- as.data.table(DEout$member$pop)
+    setnames(DEout, new = names(p))
+    DEout <- melt(DEout, measure = colnames(DEout), variable.name = "Parameter")
+
+    Plots(DEout, plotHistsOfDEoptimPars, title = "Parameter histograms from DEoptim",
+          filename = paste0("Histograms of parameters from DEoptim ", Sys.time()))
+
+
+    # Way to identify quantiles
+    if (FALSE) {
+      ll <- weibullShapeScale(p['meanDist'], p['sdDist']);
+      qweibull(0.99, shape = ll$shape, scale = ll$scale)
+    }
+
+    #########################################################
+    #################### PREDICT MAPS
+    #########################################################
+
+    opts2 <- options(reproducible.cacheSpeed = "fast")
+    on.exit(options(opts2))
+    # Browse[1]> fastdigest(quotedSpread)
+    # [1] "6ee73bef9a187c2404d856d22b7a426a"
+    sim$predictedDT <- Cache(predictQuotedSpread,
+                             massAttacksDT = sim$massAttacksDT,
+                             massAttacksStack = sim$massAttacksStack,
+                             windDirStack = sim$windDirStack,
+                             windSpeedStack = sim$windSpeedStack,
+                             propPineRas = sim$propPineRas,
+                             pineThreshold = 0.3,
+                             dispersalKernel = "Weibull",
+                             maxDistance = P(sim)$maxDistance,
+                             quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
+                             .cacheExtra = format(P(sim)$quotedSpread), # cache this instead
+                             p = p,
+                             omitArgs = "quotedSpread",
+                             subsampleFrom = subsampleFrom
+    )
+    sim$predictedStack <- Cache(stackFromDT, sim$massAttacksStack, sim$predictedDT)
+    #bb <- predictedStack$X2011[][propPineRas[] < 0.3]
+    #cc <- massAttacksStack$X2011[][propPineRas[] < 0.1]
+
+    lapply(seq(nlayers(sim$massAttacksStack)), function(x)
+      cor.test(sim$predictedStack[][, x], sim$massAttacksStack[][, x], use = "complete.obs"))
+
+    corByYr <- cor(sim$predictedStack[], sim$massAttacksStack[], use = "complete.obs")
+    (corByYrAvg <- mean(diag(corByYr)))
+
+    plotStack <- Cache(stacksForPlot, sim$massAttacksStack, sim$predictedStack, threshold = 55)
+
+    fnHash <- fastdigest(format(stacksPredVObs))
+    fn <- function(p, mas, ps, pp) {
+      stackPredVObs <- stacksPredVObs(mas, ps, pp, threshold = p[[1]])
+      2 - mean(stackPredVObs$ROCs$sumSensSpecAtThreshold)
+      # 1 - mean(stackPredVObs$ROCs$ROC)
+    }
+    p <- 10
+
+    availablePine <- rowSums(sim$massAttacksStack[], na.rm = TRUE)
+    whAttacked <- which(availablePine > 0)
+    availablePineMap <- raster(sim$massAttacksStack)
+    availablePineMap[whAttacked] <- 1
+    apmBuff <- Cache(raster::buffer, availablePineMap, width = 1e5)
+    apmBuff[sim$propPineRas[] == 0] <- NA
+
+
+    # cumulative maps
+    mam <- sim$massAttacksStack
+    for (lay in names(sim$massAttacksStack)) {
+      mam[[lay]][is.na(mam[[lay]][])] <- 0
+    }
+    ss <- sum(mam)
+    ss[] <- log(ss[] + 1)
+    # 3setColors(ss, n = 5) <- c("yellow", "orange" , "red", "purple", "blue")
+
+    # cumulative maps
+    pred <- sim$predictedStack
+    for (lay in names(pred)) {
+      pred[[lay]][is.na(pred[[lay]][])] <- 0
+    }
+    pp <- sum(pred)
+    pp[] <- log(pp[] + 1)
+
+
+
+    # Find threshold that is best
+    system.time(optimOut <- Cache(optimize, f = fn, interval = c(0.001, 200),
+                                  mas = sim$massAttacksStack, .cacheExtra = fnHash,
+                                  ps = sim$predictedStack, pp = sim$propPineRas,
+                                  tol = 0.001
+    ))
+
+    sim$thresholdBest <- optimOut$minimum
+
+    # ROC curves
+    stackPredVObs <- stacksPredVObs(sim$massAttacksStack, sim$predictedStack,
+                                    apmBuff, threshold = sim$thresholdBest,
+                                    plot = TRUE)
+
+    print(paste("ROC mean value: ", round(mean(stackPredVObs$ROCs$ROC), 3)))
+
+    ROCList[[iii]] <- round(mean(stackPredVObs$ROCs$ROC), 3)
   }
-  p <- 10
+  # Plot(stackPredVObs$stk)
 
-  availablePine <- rowSums(sim$massAttacksStack[], na.rm = TRUE)
-  whAttacked <- which(availablePine > 0)
-  availablePineMap <- raster(sim$massAttacksStack)
-  availablePineMap[whAttacked] <- 1
-  apmBuff <- Cache(raster::buffer, availablePineMap, width = 1e5)
-  apmBuff[sim$propPineRas[] == 0] <- NA
-
-
-  # cumulative maps
-  mam <- sim$massAttacksStack
-  for (lay in names(sim$massAttacksStack)) {
-    mam[[lay]][is.na(mam[[lay]][])] <- 0
-  }
-  ss <- sum(mam)
-  ss[] <- log(ss[] + 1)
-  # 3setColors(ss, n = 5) <- c("yellow", "orange" , "red", "purple", "blue")
-
-  # cumulative maps
-  pred <- sim$predictedStack
-  for (lay in names(pred)) {
-    pred[[lay]][is.na(pred[[lay]][])] <- 0
-  }
-  pp <- sum(pred)
-  pp[] <- log(pp[] + 1)
-
+  browser()
 
   ##########################
   ggplotStudyAreaFn <- function(absk, cols, studyArea, mam, pred, propPineMap) {
@@ -505,9 +587,7 @@ Predict <- function(sim) {
 
     absksp <- sf::as_Spatial(absk)
     propPineMap[propPineMap[] <= 0.05] <- NA
-    browser()
 
-    current.mode <- tmap_mode("plot")
     # current.mode <- tmap_mode("view")
 
     #t0 <- tm_basemap("OpenStreetMap") # only with tmap_mode("view")
@@ -523,49 +603,13 @@ Predict <- function(sim) {
     tmam <- t3b + t2 + t1 + tm_layout(title = "Observed")
     tpred <- t3 + t4 + t1  + tm_compass(type  = "4star", position = c("right", "top"), north = 10) + tm_layout(title = "Predicted")
     tmap_arrange(tmam, tpred)
-    tmam + tpred
+    # tmam + tpred
   }
 
-  browser()
+  current.mode <- tmap_mode("plot")
   ggplotStudyAreaFn(sim$absk, "darkgreen", sf::st_as_sf(sim$studyArea), ss,
                     pred = pp,
                     propPineMap = sim$propPineRas)
-
-  system.time(optimOut <- Cache(optimize, f = fn, interval = c(0.001, 200),
-                                mas = sim$massAttacksStack, .cacheExtra = fnHash,
-                                ps = sim$predictedStack, pp = sim$propPineRas,
-                                tol = 0.001
-  ))
-
-  thresholdBest <- optimOut$minimum
-  browser()
-  stackPredVObs <- stacksPredVObs(sim$massAttacksStack, sim$predictedStack,
-                                  apmBuff, threshold = thresholdBest,
-                                  plot = TRUE)
-
-
-
-  mean(stackPredVObs$ROCs$ROC)
-  stackPredVObs$ROCs
-
-  X2011 <- sim$predictedStack$X2011
-  X2011gtThresh <- X2011
-  X2011pred <- X2011
-  X2011gtThresh[X2011 < thresholdBest] <- NA
-  X2011pred[sim$massAttacksStack$X2011[] > 0]
-  p0 <- levelplot(X2011, par.settings = GrTheme(brewer.pal(9, "Greys")))
-  p1 <- levelplot(X2011gtThresh, par.settings = RdBuTheme(region = brewer.pal(9, 'Greens')))
-  p2 <- levelplot(X2011gtThresh, par.settings = RdBuTheme(region = brewer.pal(9, 'Greens')))
-  p0 + p1
-
-  gg <- gplot(sim$predictedStack$X2011)
-
-
-
-
-  Plot(stackPredVObs$stk)
-
-  browser()
 
   ss <- lapply(raster::unstack(stackPredVObs), function(ras) {
     freqs <- table(ras[])
@@ -579,7 +623,7 @@ Predict <- function(sim) {
 
   # Edges
   edgesPredicted <- sim$predictedStack
-  edgesPredicted[edgesPredicted < thresholdBest] <- NA
+  edgesPredicted[edgesPredicted < sim$thresholdBest] <- NA
   edgesPredicted <- raster::stack(edgesPredicted)
   edgesList <- raster::unstack(edgesPredicted)
   names(edgesList) <- names(edgesPredicted)
@@ -634,11 +678,16 @@ Predict <- function(sim) {
 
   Plots(centroidsLong, plotCentroidShift, title = "Predicted vs. Observed centroid displacment each year")
 
+  # Displacement Table
   centroids[, EastObs := c(NA, diff(xData)/1e3)]
   centroids[, NorthObs := c(NA, diff(yData)/1e3)]
   centroids[, EastPred := c(NA, diff(xPredicted)/1e3)]
   centroids[, NorthPred := c(NA, diff(yPredicted)/1e3)]
   centroids <- na.omit(centroids, cols = "EastPred")
+  corEastDisplacement <- cor(centroids$EastObs, centroids$EastPred, method = "spearman")
+  corNorthDisplacement <- cor(centroids$NorthObs, centroids$NorthPred, method = "spearman")
+  sim$correlationsDisplacement <- c(East = corEastDisplacement, North = corNorthDisplacement)
+
   centroids[, FiveYrPd := rep(c(paste0(Year[1],"/",Year[5]), paste0(Year[6],"/",Year[10])), each = 5)]
 
   centroids5Y <- centroids[, lapply(.SD, function(x) sum(x)), by = FiveYrPd,
@@ -649,6 +698,8 @@ Predict <- function(sim) {
   centroids2 <- as.data.table(t(centroids[, list(NorthObs, NorthPred, EastObs, EastPred)]))
   setnames(centroids2, centroids$Year)
   centroids2 <- cbind(Year = c("NorthObs", "NorthPred", "EastObs", "EastPred"), centroids2)
+
+
   displacementTable <- centroids2 %>%
     gt() %>%
     tab_spanner(
@@ -673,9 +724,6 @@ plotFn <- function(sim) {
   plotKernels(p)
 
 
-  par(mfrow = c(1,2))
-  plot(colMeans(sim$climateSuitabilityMaps[[names(sim$massAttacksStack)]][], na.rm = TRUE))
-  plot(colMeans(sim$massAttacksStack[[names(sim$massAttacksStack)]][], na.rm = TRUE))
 
   ## Histograms showing that there is no relationship between where beetle is and
   #  how much pine there is
@@ -696,7 +744,7 @@ plotFn <- function(sim) {
 }
 
 ### spread
-dispersal2 <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, massAttacksStack,
+dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, massAttacksStack,
                        rasterToMatch, maxDistance, # massAttacksRas,
                        params, currentTime, bgSettlingProp, type, reqdPkgs,
                        windDirStack, windSpeedStack) {
@@ -1033,12 +1081,14 @@ aggregateRasByDT <- function(ras, newRas, fn = sum) {
 #   return(out2)
 # }
 
-grow <- function(sim) {
+grow <- function(massAttacksDT, dataset, massAttacksStack, growthData, year = NULL) {
   ## determine the actual growth based on the actual number of attacked trees/ha
-  sim$massAttacksDT[, greenTreesYr_t := xt(ATKTREES, CLIMATE, P(sim)$dataset,
-                                           sim$massAttacksStack, mod$growthData)]
+  layerNames <- unique(massAttacksDT$layerName)
+  if (!is.null(year)) layerNames <- grep(year, layerNames, value = TRUE)
+  massAttacksDT[layerName %in% layerNames, greenTreesYr_t := xt(ATKTREES, CLIMATE, dataset,
+                                       massAttacksStack, growthData)]
 
-  return(invisible(sim))
+  return(massAttacksDT)
 }
 
 
@@ -1315,4 +1365,15 @@ plotHistsOfDEoptimPars <- function(DEout, title) {
     facet_grid(. ~ Parameter, scales = "free") +
     theme_bw() +
     ggtitle(title))
+}
+
+growPredict <- function(sim) {
+  if (time(sim) == start(sim)) {
+    massAttacksDTforPredict <- data.table::copy(sim$massAttacksDT)
+  } else {
+    massAttacksDTforPredict <- data.table::copy(sim$predictedDT)
+  }
+  massAttacksDTforPredict <- massAttacksDTforPredict[grep(time(sim), layerName)] # remove all future data
+  grow(massAttacksDTforPredict, P(sim)$dataset,
+         sim$massAttacksStack, mod$growthData, year = time(sim))
 }

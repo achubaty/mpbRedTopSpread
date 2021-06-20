@@ -12,7 +12,7 @@ quotedSpreadDefault <- quote({
     dispersalKernel = dispersalKernel,
     asymParam = p[2],
     sdDist = p[3],# p[4], # when there was estimation for advectionDir == needed p[4]
-    #cl = min(8, parallel::detectCores()),
+    cl = clNumber,
     windSpeed = windSpeedRas[],
     windDir = windDirRas[],
     meanDist = p[[1]],# rlnorm(1, log(p[[1]]), log(p[4])),#meanDist = rlnorm(1, log(p[[1]]), log(p[[5]])), with estimating advectionDir
@@ -25,21 +25,23 @@ quotedSpreadDefault <- quote({
 predictQuotedSpread <- function(massAttacksDT, massAttacksStack, # startYears, atksKnownNextYr,
                                 dispersalKernel = "Weibull",
                                 propPineRas, pineThreshold = 0.3, maxDistance, quotedSpread, p,
-                                windDirStack, windSpeedStack, ...) {
+                                windDirStack, windSpeedStack, clNumber = NULL, ...) {
   if (!compareRaster(massAttacksStack,
                      propPineRas,
                      windDirStack,
                      windSpeedStack))
     stop("The coarser resolution files need to be all the same resolution")
 
-  nams <- intersect(names(massAttacksStack), names(windDirStack))
+  nams <- intersect(unique(massAttacksDT$layerName), names(windDirStack))
   # nams <- names(massAttacksStack)
   names(nams) <- nams
   # lastOne <- length(nams)
   # nams <- nams# [-lastOne]
-  massAttacksList <- raster::unstack(massAttacksStack[[nams]])
-  windDirList <- raster::unstack(windDirStack[[nams]])
-  windSpeedList <- raster::unstack(windSpeedStack[[nams]])
+  # massAttacksList <- raster::unstack(massAttacksStack[[nams]])
+  windDirStk <- windDirStack[[nams]]
+  windDirList <- if (nlayers(windDirStk) > 1) raster::unstack(windDirStk) else list(windDirStk)
+  windSpeedStk <- windSpeedStack[[nams]]
+  windSpeedList <- if (nlayers(windSpeedStk) > 1) raster::unstack(windSpeedStk) else list(windSpeedStk)
   propPineRas <- propPineRas
   reps <- 1
 

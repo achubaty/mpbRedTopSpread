@@ -88,6 +88,7 @@ objFunInner <- function(
   startYears, endYears,
   massAttacksStack,
   massAttacksDT,
+  clNumber = NULL,
   ...,
   objFunValOnFail = 1e3,
   fitType, omitPastPines,
