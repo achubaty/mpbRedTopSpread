@@ -17,7 +17,7 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
   tos <- ( spiralsD[, c("row", "col")]) * res(r)
   colnames(tos) <- c("x", "y")
 
-  sdDist = p[4]
+  p_sdDist = p[4]
   par(mfrow = c(4,4))
   for (i in 1:4) {
     mid <- SpaDES.tools::middlePixel(abund)
@@ -26,14 +26,14 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
     nas <- is.na(toCells)
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
-    windDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
+    p_meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
+    windDir <- rnorm(1, p["p_advectionDir"], p["advectionDirSD"]*3)
     print("aaa")
     dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                           p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                            propPineRas = r, fromCell = mid,
                            toCells = toCells,
-                           asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                           asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
                            windDir = windDirRas[])
     abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
     plot(abund)
@@ -46,10 +46,10 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
     dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir = windDirRas[])
     abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
     plot(abund)
@@ -62,10 +62,10 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
     dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir =  windDirRas[])
     abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
     plot(abund)
@@ -93,8 +93,8 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
   tos <- ( spiralsD[, c("row", "col")]) * res(r)
   colnames(tos) <- c("x", "y")
 
-  sdDist = p[4]
-  # p["advectionMag"] <- 15000
+  p_sdDist = p[4]
+  # p["p_advectionMag"] <- 15000
   par(mfrow = c(4,4))
   for (i in 1:4) {
     mid <- SpaDES.tools::middlePixel(abund)
@@ -103,13 +103,13 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
     nas <- is.na(toCells)
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
-    meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
-    windDir <- rnorm(1, p["advectionDir"], p["advectionDirSD"]*3)
+    p_meanDist = rlnorm(1, log(p[[1]]), log(p[[5]]))
+    windDir <- rnorm(1, p["p_advectionDir"], p["advectionDirSD"]*3)
     dd <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                           meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                           p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                            propPineRas = r, fromCell = mid,
                            toCells = toCells,
-                           asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                           asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
                            windDir = windDirRas[])
     abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
     plot(abund)
@@ -122,10 +122,10 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
     dd1 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir = windDirRas[])
     abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
     plot(abund)
@@ -138,10 +138,10 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
     ddd <- ddd[!nas,]
     toCells <- cellFromXY(r, xy = ddd[, c("x", "y")])
     dd2 <- distanceFunction(ddd[, "dists"], dispersalKernel = "exponential",
-                            meanDist = meanDist, sdDist = p["sdDist"], landscape = r,
+                            p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["advectionMag"], angle = ddd[, "angles"],
+                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir =  windDirRas[])
     abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
     plot(abund)
@@ -152,17 +152,17 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
 # Visualize with maps
 # Kernel
 advectionMagTmp <- p[2] ;
-advectionDir <- p[3]
+p_advectionDir <- p[3]
 r <- raster(extent(-20000, 20000, -20000, 20000), res = 100)
 r[] <- 1
 abund <- raster(r)
 mid <- SpaDES.tools::middlePixel(abund)
 abund[mid] <- 10000
 out <- spread3(mid, rasQuality = r, rasAbundance = abund,
-               advectionDir = advectionDir,
-               advectionMag = advectionMagTmp,
-               meanDist = meanDist,
-               sdDist = sdDist, dispersalKernel = "weibull", plot.it = F)
+               p_advectionDir = p_advectionDir,
+               p_advectionMag = advectionMagTmp,
+               p_meanDist = p_meanDist,
+               p_sdDist = p_sdDist, dispersalKernel = "weibull", plot.it = F)
 abund[out$pixels] <- out$abundSettled
 abund[mid] <- max(abund[], na.rm = TRUE) * 1.5
 clearPlot(); Plot(abund)
@@ -245,14 +245,14 @@ Plot(diffs, visualSqueeze = 1)
 
 # Average direction
 
-mn <- (meanDist + advectionMagTmp)
-sd <- mn/sdDist # 0.8 to 2.0 range
+mn <- (p_meanDist + advectionMagTmp)
+sd <- mn/p_sdDist # 0.8 to 2.0 range
 shape <- (sd/mn)^(-1.086)
 scale <- mn/exp(lgamma(1 + 1/shape))
 aa <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)
 
-mn <- max(10, (meanDist - advectionMagTmp))
-sd <- mn/sdDist # 0.8 to 2.0 range
+mn <- max(10, (p_meanDist - advectionMagTmp))
+sd <- mn/p_sdDist # 0.8 to 2.0 range
 shape <- (sd/mn)^(-1.086)
 scale <- mn/exp(lgamma(1 + 1/shape))
 bb <- curve(dweibull(x, shape = shape, scale = scale), from = 0, 1e5)

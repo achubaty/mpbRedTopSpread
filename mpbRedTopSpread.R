@@ -20,8 +20,8 @@ defineModule(sim, list(
   reqdPkgs = list("achubaty/amc@development",
                   "BioSIM", ##  ## not on CRAN/GitHub; see install info at top of this file
                   "CircStats", "data.table", "DEoptim", "EnvStats", "ggplot2",
-                  "PredictiveEcology/SpaDES.core@modifyList2 (>= 1.0.8.9004)",
-                  "PredictiveEcology/LandR@cluster (>= 1.0.4.9019)",
+                  "PredictiveEcology/SpaDES.core@modifyList2 (>= 1.0.8.9006)",
+                  "PredictiveEcology/LandR@cluster (>= 1.0.4.9022)",
                   "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "PredictiveEcology/mpbutils (>= 0.1.3)", "purrr",
@@ -31,21 +31,26 @@ defineModule(sim, list(
   parameters = rbind(
     defineParameter("dataset", "character", "Boone2011", NA, NA, "Which dataset to use for stand dynamic model fitting. One of 'Boone2011' (default), 'Berryman1979_fit', or 'Berryman1979_forced'. Others to be implemented later."),
     defineParameter("growthInterval", "numeric", 1, NA, NA, "This describes the interval time between growth events"),
-    defineParameter("advectionDir", "numeric", 90, 0, 359.9999,
-                    "The direction of the spread bias, in degrees from north"),
-    defineParameter("advectionMag", "numeric", 5e3, NA, NA,
-                    "The magnitude of the wind effect on spread. This number is multiplied by the wind speed (which averages 9.6 km/h in the historical dataset)"),
+    # defineParameter("p_advectionDir", "numeric", 90, 0, 359.9999,
+    #                 "The direction of the spread bias, in degrees from north"),
     defineParameter("bgSettlingProp", "numeric", 0.1, 0, 1,
                     "The proportion of beetles that settle from those that could potentially settle, even if no pine"),
     defineParameter("maxDistance", "numeric", 1.4e5, NA, NA,
                     "The maximum distance to allow for pair-wise from-to dispersal pairs"),
-    defineParameter("meanDist", "numeric", 1e4, NA, NA,
-                    "Expected dispersal distance (m); ~63% go less than this distance"),
     defineParameter("quotedSpread", "language", NULL, NA, NA,
                     "A spread function that is contained within a quote(). If left at NULL or NA, it will use the module version"),
-    defineParameter("sdDist", "numeric", 1.2, NA, NA,
+    defineParameter("p_advectionMag", "numeric", 5e3, NA, NA,
+                    "The magnitude of the wind effect on spread. This number is multiplied by the wind speed (which averages 9.6 km/h in the historical dataset)"),
+    defineParameter("p_meanDist", "numeric", 1e4, NA, NA,
+                    "Expected dispersal distance (m); ~63% go less than this distance"),
+    defineParameter("p_nbSize", "numeric", 0.2, NA, NA,
+                    "Single scalar that is the size parameter of the negative binomial fn in the likelihood"),
+    defineParameter("p_rescaler", "numeric", 1, NA, NA,
+                    "Single scalar that rescales the predicted abundances that result from growFit ",
+                    "& dispersalFit, so that they match the observed data"),
+    defineParameter("p_sdDist", "numeric", 1.2, NA, NA,
                     paste0("The dispersion term for the Weibull dispersal kernel: contributes to shape and scale parameters;",
-                    "sqrt(variance(of the Weibull distribution)) ")),
+                           "sqrt(variance(of the Weibull distribution)) ")),
     defineParameter("type", "character", "DEoptim", NA, NA,
                     "One of three modes of running this module: DEoptim, optim, runOnce or nofit"),
     defineParameter(".plots", "character", "screen", NA, NA,
@@ -90,10 +95,11 @@ defineModule(sim, list(
   outputObjects = bindrows(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
     createsOutput("pBest", "numeric", "Best p values coming from DEoptim"),
+    createsOutput("DEout", "list", "The output object from DEoptim"),
     createsOutput("propPineRas", "RasterLayer",
                   paste("Proportion (not percent) cover map of *all* pine. This will",
                         " be the pixel-based sum if there are more than one layer")),
-    createsOutput("thresholdBest", "numeric",
+    createsOutput("thresholdAttackTreesMinDetectable", "numeric",
                   paste("The number of predicted attacks (post dispersal) per pixel below which ",
                         "it can be considered 'no attack'"))
   )
@@ -109,11 +115,12 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- Init(sim)
 
            # schedule future event(s)
-           if (isTRUE("fit" %in% P(sim)$type)) {
+           if (isTRUE(any(c("fit", "DEoptim", "runOnce") %in% P(sim)$type))) {
              sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "growFit", eventPriority = 2.5)
              sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalFit", eventPriority = 3.5)
            }
            if (isTRUE("validate" %in% P(sim)$type)) {
+             sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "growFit", eventPriority = 2.5)
              sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "validate", 4.5)
            }
            if (isTRUE("predict" %in% P(sim)$type)) {
@@ -124,15 +131,16 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
          },
          "growFit" = {
            sim$massAttacksDT <- grow(sim$massAttacksDT, P(sim)$dataset,
-                                     sim$massAttackesStack, mod$growthData)
+                                     sim$massAttacksStack, mod$growthData)
          },
          "growPredict" = {
-           if (is.null(sim$pBest)) {
+           if (is.null(sim$DEout)) {
+             browser()
              objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
-             DEout <- readRDS(tail(objs, 1))
-             DEout <- readRDS(objs[16])
-             sim$pBest <- do.call(c, P(sim)[c("meanDist", "advectionMag", "sdDist")])#, "advectionDir")])
-             sim$pBest[] <- DEout$optim$bestmem # replace with values from disk object
+             sim$DEout <- readRDS(tail(objs, 1)[1])
+             sim$DEout <- colnamesToDEout(sim$DEout, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+             sim$pBest <- sim$DEout$optim$bestmem # use [] to keep names
+
            }
            sim$massAttacksDTforPredict <- growPredict(sim)
 
@@ -147,7 +155,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
          "dispersalFit" = {
            # The outputs for this are saved to disk ... so no "return" sim
-           sim$pBest <- dispersalFit(quotedSpread = P(sim)$quotedSpread,
+           sim$DEout <- dispersalFit(quotedSpread = P(sim)$quotedSpread,
                              propPineRas = sim$propPineRas, studyArea = sim$studyArea,
                              massAttacksDT = sim$massAttacksDT,
                              massAttacksStack = sim$massAttacksStack,
@@ -431,8 +439,8 @@ Init <- function(sim) {
 }
 
 dispersalPredict <- function(sim) {
-  if (is.null(sim$thresholdBest))
-    sim$thresholdBest <- 70
+  if (is.null(sim$thresholdAttackTreesMinDetectable))
+    sim$thresholdAttackTreesMinDetectable <- 70
   predictedDT <- Cache(predictQuotedSpread,
                        massAttacksDT = sim$massAttacksDTforPredict,
                        massAttacksStack = sim$massAttacksStack,
@@ -449,7 +457,7 @@ dispersalPredict <- function(sim) {
                        omitArgs = "quotedSpread"
   )
 
-  predictedDT <- predictedDT[val > sim$thresholdBest]
+  predictedDT <- predictedDT[val > sim$thresholdAttackTreesMinDetectable]
   predictedDT[, val := val/2]
   predictedDT[, `:=`(
     pixel = cellFromXY(sim$massAttacksStack, cbind(x, y)),
@@ -459,18 +467,23 @@ dispersalPredict <- function(sim) {
   setnames(predictedDT, "val", "ATKTREES")
   return(rbindlist(list(sim$predictedDT, predictedDT), use.names = TRUE, fill = TRUE))
 }
+
 Validate <- function(sim) {
   objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
-  DEout <- readRDS(tail(objs, 1))
-  DEout <- readRDS(tail(objs, 2)[1])
+  sim$DEout <- readRDS(tail(objs, 1)[1])
+  sim$DEout <- colnamesToDEout(sim$DEout, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+  pBest <- sim$DEout$optim$bestmem # use [] to keep names
 
   ROCList <- list()
-  for (iii in 16) {
+  for (iii in 21) {
     DEout <- readRDS(objs[iii])
 
-    if (length(DEout$optim$bestmem) != 3) next
-    p <- sim$pBest # gets the parameter names
-    p[] <- DEout$optim$bestmem # replace with values from disk object
+    if (length(DEout$optim$bestmem) == 3) {
+      DEout <- colnamesToDEout(DEout, c("p_meanDist", "p_advectionMag", "p_sdDist"))
+    } else if  (length(DEout$optim$bestmem) == 4) {
+      DEout <- colnamesToDEout(DEout, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+    }
+    p <- DEout$optim$bestmem # replace with values from disk object
 
 
     DEout <- as.data.table(DEout$member$pop)
@@ -483,7 +496,7 @@ Validate <- function(sim) {
 
     # Way to identify quantiles
     if (FALSE) {
-      ll <- weibullShapeScale(p['meanDist'], p['sdDist']);
+      ll <- weibullShapeScale(p['p_meanDist'], p['p_sdDist']);
       qweibull(0.99, shape = ll$shape, scale = ll$scale)
     }
 
@@ -526,9 +539,7 @@ Validate <- function(sim) {
     fn <- function(p, mas, ps, pp) {
       stackPredVObs <- stacksPredVObs(mas, ps, pp, threshold = p[[1]])
       2 - mean(stackPredVObs$ROCs$sumSensSpecAtThreshold)
-      # 1 - mean(stackPredVObs$ROCs$ROC)
     }
-    p <- 10
 
     availablePine <- rowSums(sim$massAttacksStack[], na.rm = TRUE)
     whAttacked <- which(availablePine > 0)
@@ -536,7 +547,6 @@ Validate <- function(sim) {
     availablePineMap[whAttacked] <- 1
     apmBuff <- Cache(raster::buffer, availablePineMap, width = 1e5)
     apmBuff[sim$propPineRas[] == 0] <- NA
-
 
     # cumulative maps
     mam <- sim$massAttacksStack
@@ -555,20 +565,18 @@ Validate <- function(sim) {
     pp <- sum(pred)
     pp[] <- log(pp[] + 1)
 
-
-
-    # Find threshold that is best
-    system.time(optimOut <- Cache(optimize, f = fn, interval = c(0.001, 200),
+    # Find numAttackTrees minimum threshold that defines detectable
+    system.time(optimAttackTreesMinDetectable <- Cache(optimize, f = fn, interval = c(0.001, 200),
                                   mas = sim$massAttacksStack, .cacheExtra = fnHash,
                                   ps = sim$predictedStack, pp = sim$propPineRas,
                                   tol = 0.001
     ))
 
-    sim$thresholdBest <- optimOut$minimum
+    sim$thresholdAttackTreesMinDetectable <- optimAttackTreesMinDetectable$minimum
 
     # ROC curves
     stackPredVObs <- stacksPredVObs(sim$massAttacksStack, sim$predictedStack,
-                                    apmBuff, threshold = sim$thresholdBest,
+                                    apmBuff, threshold = sim$thresholdAttackTreesMinDetectable,
                                     plot = TRUE)
 
     print(paste("ROC mean value: ", round(mean(stackPredVObs$ROCs$ROC), 3)))
@@ -623,7 +631,7 @@ Validate <- function(sim) {
 
   # Edges
   edgesPredicted <- sim$predictedStack
-  edgesPredicted[edgesPredicted < sim$thresholdBest] <- NA
+  edgesPredicted[edgesPredicted < sim$thresholdAttackTreesMinDetectable] <- NA
   edgesPredicted <- raster::stack(edgesPredicted)
   edgesList <- raster::unstack(edgesPredicted)
   names(edgesList) <- names(edgesPredicted)
@@ -749,40 +757,27 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                        params, currentTime, bgSettlingProp, type, reqdPkgs,
                        windDirStack, windSpeedStack) {
 
-  ## check that MPB and pine rasters are the same resolution and ncells
-  # if (fromDisk(pineMap))
-  #   pineMap[] <- pineMap[]
-  #
-  # ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
-  # MAXTREES <- 1125 * prod(res(pineMap)) / 100^2 ## TODO: round this?
-  #
-  # ## asymmetric spread (biased eastward)
-  # # lodgepole pine and jack pine together
+  # Make sure propPineRas is indeed a proportion
   mv <- maxValue(propPineRas)
-  #
   if (mv > 1)
     propPineRas[] <- propPineRas[] / 100 ## much faster than calc; ## TODO: allow different params per species
 
-  nas <- is.na(propPineRas[]) # & !is.na(rasterToMatch[])
+  # Set NAs on propPineRas to 0
+  nas <- is.na(propPineRas[])
   propPineRas[nas] <- 0
 
   # Put objects in Global for objFun -- this is only when not using multi-machine cluster
-  advectionDir <- params$advectionDir
-  advectionMag <- params$advectionMag
+  p_advectionMag <- params$p_advectionMag
   omitPastPines <- FALSE # was TRUE ... but maybe bad because there are many that have multiple years
-  dispersalKernel <- "Weibull"
   # dispersalKernel <- "Exponential"
-  p <- do.call(c, params[c("meanDist", "advectionMag", "sdDist")])#, "advectionDir")])
-  # p["meanDist"] <- 1e4 # Average distance per year -- in m
-  # p["advectionMag"] <- 5e3 # Average distance of the asymmetry -- in m
-  ##p["advectionDir"] <- 90
-  sdDist <- p["sdDist"] # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
-  #p["meanDistSD"] <- 20 # Interannual variation # not needed once we have wind and climate suitability
-  #p["advectionDirSD"] <- 20
-  # lower <- c(25000,  50,  0.9, 1.001)
-  # upper <- c(65000, 2000, 2.5, 1.7)
-  lower <- c(5000,  0.1,  0.5)
-  upper <- c(105000, 2000, 2.5)
+  dispersalKernel <- "Weibull"
+  dispersalKernel <- "twodt"
+  p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler", "p_nbSize")])#, "p_advectionDir")])
+  p_sdDist <- p["p_sdDist"] # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
+  # lower <- c(5000,  0.1,  0.5, 0.01, 0.01)
+  # upper <- c(105000, 2000, 2.5, 3, 0.9)
+  lower <- c(5000,  0.1,  0.01, 0.01, 0.01)
+  upper <- c(105000, 2000, 0.5, 3, 0.9)
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
 
   fitType <- "distanceFromEachPoint"
@@ -791,7 +786,8 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
 
   # Identify the objsToExport -- needs to be ALL the formalArgs of the objFun
   #   however, don't pass ones that are passed manually at the DEoptim call
-  #   Generally, only pass "very small" objects in the DEoptim call. Large ones do this way.
+  #   Generally, only pass "very small" objects in the DEoptim call. Large ones do this way (i.e.,
+  #   export them first.
   objsToExport <- setdiff(formalArgs("objFun"),
                           # The following are small and passed at the time of the DEoptim call
                           c("p", "reps", "quotedSpread", "fitType", "distanceFunction"))
@@ -804,29 +800,18 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   # 213 appears slower than rest
   ipsNum <- c(189, 184, 220, 213, 217, 97, 106)
   ips <- paste0("10.20.0.", ipsNum)
-  # ips <- c("localhost", ips)
-  #ips <- c("10.20.0.184", "localhost", "10.20.0.220", "10.20.0.213", "10.20.0.217", "10.20.0.97") ## TODO: don't hardcode this. pass as param
-  #ips <-   rep(ips, c(29, 16, 20, 0, 16, 17, 13))
-  # ips <- rep(ips, c(16, 27, 25, 6, 16, 10))
-  #                c(19, 22, 24, 6, 19, 10)
-  #ips <- rep(ips, c(27, 16, 22, 19, 11, 5))
-  #print(length(ips))
-  #adjustments <- c(1.25, 1.1, #0.8,
-  #                 0.8, 1.4) # relative, manual, highly idiosyncratic, depends on current use of machines
-  #ips <- c("10.20.0.106", "10.20.0.68", "10.20.0.213")
   adjustments = 1#c(0.9, 2, 0.7, 2, 0.4, 0.4)
   numCoresNeeded <- 110 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
 
-  # ips <- "10.20.0.213"
-  # adjustments = 1
-  # numCoresNeeded <- 3 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
-  reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table", "purrr")), reqdPkgs, value = TRUE)
-  if (isTRUE(type == "DEoptim")) {
+  reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table",
+                                           "purrr", "mpbutils")),
+                   reqdPkgs, value = TRUE)
+  if (isTRUE(type %in% c("DEoptim", "fit"))) {
     cl <- clusterSetup(workers = ips, objsToExport = objsToExport,
                        reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 1, # fn = fn,
-                       # quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
-                       #                                        "sp", "raster", "terra", "lwgeom"),
-                       #                                      repos = "https://cran.rstudio.com")),
+                       quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
+                                                              "sp", "raster", "terra", "lwgeom"),
+                                                             repos = "https://cran.rstudio.com")),
                        numCoresNeeded = numCoresNeeded, adjustments = adjustments)
     on.exit(try(stopCluster(cl)), add = TRUE)
     message("Starting DEoptim")
@@ -838,11 +823,12 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                      quotedSpread = quotedSpread,
                      control = DEoptim.control(cluster = cl,
                                                strategy = 6,
-                                               itermax = 50,
+                                               itermax = 60,
                                                NP = numCoresNeeded),
                      fitType = fitType,
                      subsampleFrom = subsampleFrom)
 
+    DEout <- colnamesToDEout(DEout, names(p))
     saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
     sim2 <- get("sim", whereInStack("sim"))
     parms <- params(sim2)
@@ -851,19 +837,29 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     print(difftime(stPost, stPre))
     try(parallel::stopCluster(cl))
     browser()
-    sim$DEoptim <- DEoptim
 
   } else if (isTRUE(type == "runOnce")) {
+    objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
+    DEout <- readRDS(tail(objs, 1))
+    if (length(colnames(DEout$member$pop)) == 0) {
+      message("Please add names to parameter vector in DEout")
+      DEout <- colnamesToDEout(DEout, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+    }
+    pBest <- DEout$optim$bestmem[] # use [] to keep names
+    pBest["p_sdDist"] <- 0.08
+
+    browser()
     #profvis::profvis(
     st1 <- system.time({
-      out <- objFun(quotedSpread = quotedSpread, reps = 1, p = p, fitType = fitType,
+      out <- objFun(quotedSpread = quotedSpread, reps = 1, p = pBest, fitType = fitType,
                     massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT, subsampleFrom = subsampleFrom)
     })
     #)
     print(st1)
   } else if (isTRUE(type == "optim")) {
+    stop("This has not been maintained and appears to be not capable of estimating parameters")
     numCoresNeeded <- 5
-    ips <- "10.20.0.213"
+    ips <- "10.20.0.220"
     cl <- clusterSetup(workers = ips, objsToExport = objsToExport,
                                 reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
                                 numCoresNeeded = numCoresNeeded)
@@ -889,17 +885,8 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     stPost <- Sys.time()
 
   }
-  objs <- dir("outputs", pattern = "DEout", full.names = TRUE)
-  DEout <- readRDS(tail(objs, 1))
-  pBest <- p
-  pBest[] <- DEout$optim$bestmem[] # use [] to keep names
 
-
-  return(invisible(pBest))
-  #########################################################
-
-  # visualizeKernel(p, massAttacksStack, maxDistance = maxDistance)
-  ###############################################
+  return(invisible(DEout))
 }
 
 
@@ -913,7 +900,7 @@ spiralDistances <- function(pixelGroupMap, maxDis, cellSize) {
 }
 
 distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYrVec,
-                             propPineRas, asymParam, windDir, meanDist, sdDist,
+                             propPineRas, asymParam, windDir, p_meanDist, p_sdDist,
                              dispersalKernel, maxDistance, windSpeed) {
 
   if (asymParam > 0) {
@@ -924,8 +911,8 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYr
       windSpeed <- windSpeed[fromCell]
     }
     advectionXY <- c(x = sin(rad(windDir))*asymParam*windSpeed, y = cos(rad(windDir))*asymParam*windSpeed)
-    x <- toXYs[, 'x'] - advectionXY[1]/meanDist*dist
-    y <- toXYs[, 'y'] - advectionXY[2]/meanDist*dist
+    x <- toXYs[, 'x'] - advectionXY[1]/p_meanDist*dist
+    y <- toXYs[, 'y'] - advectionXY[2]/p_meanDist*dist
     newTo <- cbind(x, y)
     colnames(newTo) <- c("x", "y")
     if (!is.null(dim(dist))) dist <- dist[,1, drop = TRUE]
@@ -935,7 +922,7 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYr
     dist <- dists[, "dists"]
   }
 
-  prob <- kernelFn(meanDist, sdDist, dispersalKernel, dist)
+  prob <- kernelFn(p_meanDist, p_sdDist, dispersalKernel, dist)
 
   ll <- landscape[fromCell]
   prob1 <- prob * ll
@@ -1146,23 +1133,23 @@ plotKernels <- function(p, reps = 10) {
   nrows <- max(1, floor(sqrt(reps + 1)))
   ncols <- max(1, ceiling((reps + 1)/nrows))
   par(mfrow = c(nrows, ncols))
-  if (is.null(names(p))) stop("p must be named and have these 3: meanDist, sdDist, meanDistSD")
+  if (is.null(names(p))) stop("p must be named and have these 3: p_meanDist, p_sdDist, meanDistSD")
   for (i in 1:reps) {
-    meanDist <- p["meanDist"]
+    p_meanDist <- p["p_meanDist"]
     if (!is.na(p["meanDistSD"]))
-      meanDist <- rlnorm(1, log(p["meanDist"]), log(p["meanDistSD"]))
+      p_meanDist <- rlnorm(1, log(p["p_meanDist"]), log(p["meanDistSD"]))
 
-    sdDist = p["sdDist"]
-    shapeScale <- weibullShapeScale(meanDist = meanDist, sdDist = sdDist)
-    # mn <- (meanDist)
-    # sd <- mn/sdDist # 0.8 to 2.0 range
+    p_sdDist = p["p_sdDist"]
+    shapeScale <- weibullShapeScale(p_meanDist = p_meanDist, p_sdDist = p_sdDist)
+    # mn <- (p_meanDist)
+    # sd <- mn/p_sdDist # 0.8 to 2.0 range
     # shape <- (sd/mn)^(-1.086)
     # scale <- mn/exp(lgamma(1 + 1/shape))
 
     ww <- rweibull(1e4, shape = shapeScale$shape, scale = shapeScale$scale)
     hist(ww, xlim = c(0, 14e4), main = "", xlab = "Distance (m) from source")
-    abline(v = meanDist, col = "red")
-    abline(v = p[["meanDist"]], col = "green")
+    abline(v = p_meanDist, col = "red")
+    abline(v = p[["p_meanDist"]], col = "green")
   }
   plot(type = "n", x = 1:10, axes = F, xlab = "", ylab = "")
   legend(x = 2, y = 8, col = c("red", "green"), lty= 1,
@@ -1171,27 +1158,29 @@ plotKernels <- function(p, reps = 10) {
   mtext(text = "Dispersal kernels", outer = TRUE, line = -3, xpd = TRUE)
 }
 
-kernelFn <- function(meanDist, sdDist, dispersalKernel, dist) {
-  if (grepl("Weibull", dispersalKernel)) {
-    shapeScale <- weibullShapeScale(meanDist, sdDist)
-
-    if (grepl("Weibull", dispersalKernel)) {
-      prob <- dweibull(dist, scale = shapeScale$scale, shape = shapeScale$shape)
-    }
-
-    infs <- is.infinite(prob)
-    if (any(infs))
-      prob[infs] <- 0
+kernelFn <- function(p_meanDist, p_sdDist, dispersalKernel, dist) {
+  dispersalKernel <- tolower(dispersalKernel)
+  if (grepl("weib", dispersalKernel)) {
+    shapeScale <- weibullShapeScale(p_meanDist, p_sdDist)
+    prob <- dweibull(dist, scale = shapeScale$scale, shape = shapeScale$shape)
+  } else if (grepl("twodt", dispersalKernel)) {
+    muConvert <- mpbutils:::kernel_twoDT_mean(100, 1)
+    mu <- p_meanDist / muConvert
+    prob <- kernel_twoDT(dist, mu, p = p_sdDist)
   } else {
-    prob <- dexp(dist, rate = 1/meanDist)
+    # Using exponential
+    prob <- dexp(dist, rate = 1/p_meanDist)
 
   }
+  nonFinites <- !is.finite(prob)
+  if (any(nonFinites))
+    prob[nonFinites] <- 0
   prob
 }
 
-weibullShapeScale <- function(meanDist, sdDist) {
-  mn <- (meanDist)
-  sd <- mn/sdDist # 0.8 to 2.0 range
+weibullShapeScale <- function(p_meanDist, p_sdDist) {
+  mn <- (p_meanDist)
+  sd <- mn/p_sdDist # 0.8 to 2.0 range
   shape <- (sd/mn)^(-1.086)
   scale <- mn/exp(lgamma(1+1/shape))
   return(list(scale = scale, shape = shape))
@@ -1376,4 +1365,18 @@ growPredict <- function(sim) {
   massAttacksDTforPredict <- massAttacksDTforPredict[grep(time(sim), layerName)] # remove all future data
   grow(massAttacksDTforPredict, P(sim)$dataset,
          sim$massAttacksStack, mod$growthData, year = time(sim))
+}
+
+colnamesToDEout <- function(DEout, paramNames = c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler")) {
+
+  if (length(colnames(DEout$member$pop)) == 0) {
+    message(crayon::green("Please ensure parameter vector in DEout is named: ", paste(collapse = ", ", paramNames)))
+    names(DEout$optim$bestmem) <- paramNames
+    names(DEout$member$lower) <- paramNames
+    names(DEout$member$upper) <- paramNames
+    colnames(DEout$member$bestmemit) <- paramNames
+    colnames(DEout$member$pop) <- paramNames
+  }
+
+  DEout
 }
