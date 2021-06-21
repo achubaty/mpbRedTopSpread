@@ -1,9 +1,10 @@
 
 objFun <- function(p, propPineRas, # massAttacksRas,
-                   advectionDir, advectionMag,
+                   # p_advectionDir,
+                   # p_advectionMag,
                    # minNumAgents,
                    massAttacksStack, massAttacksDT, currentTime, reps = 10,
-                   quotedSpread, fitType = "ss1", omitPastPines, sdDist, dispersalKernel,
+                   quotedSpread, fitType = "ss1", omitPastPines, p_sdDist, dispersalKernel,
                    maxDistance, windDirStack, windSpeedStack, subsampleFrom = NULL) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
@@ -17,10 +18,10 @@ objFun <- function(p, propPineRas, # massAttacksRas,
     massAttacksDT <- get("massAttacksDT", envir = .GlobalEnv)
   # if (missing(massAttacksRas))
   #   massAttacksRas <- get("massAttacksRas", envir = .GlobalEnv)
-  if (missing(advectionDir))
-    advectionDir <- get("advectionDir", envir = .GlobalEnv)
-  if (missing(advectionMag))
-    advectionMag <- get("advectionMag", envir = .GlobalEnv)
+  # if (missing(p_advectionDir))
+  #   p_advectionDir <- get("p_advectionDir", envir = .GlobalEnv)
+  # if (missing(p_advectionMag))
+  #   p_advectionMag <- get("p_advectionMag", envir = .GlobalEnv)
   # if (missing(minNumAgents))
   #   minNumAgents <- get("minNumAgents", envir = .GlobalEnv)
   if (missing(currentTime))
@@ -29,8 +30,8 @@ objFun <- function(p, propPineRas, # massAttacksRas,
     fitType <- get("fitType", envir = .GlobalEnv)
   if (missing(omitPastPines))
     omitPastPines <- get("omitPastPines", envir = .GlobalEnv)
-  if (missing(sdDist))
-    sdDist <- get("sdDist", envir = .GlobalEnv)
+  if (missing(p_sdDist))
+    p_sdDist <- get("p_sdDist", envir = .GlobalEnv)
   if (missing(dispersalKernel))
     dispersalKernel <- get("dispersalKernel", envir = .GlobalEnv)
   if (missing(maxDistance))
@@ -89,6 +90,7 @@ objFunInner <- function(
   massAttacksStack,
   massAttacksDT,
   clNumber = NULL,
+  p,
   ...,
   objFunValOnFail = 1e3,
   fitType, omitPastPines,
@@ -145,10 +147,16 @@ objFunInner <- function(
     expectedNum <- out$val # * 1125 * prod(res(massAttacksRas))/1e4
 
     # Rescale -- we are interested in the distribution, not the absolute values -- maybe?: TODO
-    # rescaler <- sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
-    rescaler <- 1#sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
+    # p_rescaler <- sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
+    p_rescaler <- p["p_rescaler"]
+    if (is.na(p_rescaler))
+      p_rescaler <- 2.2 # was best in one case
+    p_nbSize <- p["p_nbSize"]
+    if (is.na(p_nbSize))
+      p_nbSize <- 0.2 # was best in one case
+    if (is.na(p_rescaler)) p_rescaler <- 1
     # likelihood
-    lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*rescaler, size = 0.1, log = TRUE)
+    lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*p_rescaler, size = p_nbSize, log = TRUE)
     theInfs <- is.infinite(lll)
     if (any(theInfs)) {
       lowestProb <- min(lll[!theInfs])
