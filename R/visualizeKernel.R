@@ -33,7 +33,7 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
                            p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                            propPineRas = r, fromCell = mid,
                            toCells = toCells,
-                           asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
+                           p_advectionMag = p["p_advectionMag"], angle = ddd[, "angles"],
                            windDir = windDirRas[])
     abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
     plot(abund)
@@ -49,7 +49,7 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
                             p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
+                            p_advectionMag = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir = windDirRas[])
     abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
     plot(abund)
@@ -65,7 +65,7 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
                             p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
+                            p_advectionMag = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir =  windDirRas[])
     abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
     plot(abund)
@@ -109,7 +109,7 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
                            p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                            propPineRas = r, fromCell = mid,
                            toCells = toCells,
-                           asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
+                           p_advectionMag = p["p_advectionMag"], angle = ddd[, "angles"],
                            windDir = windDirRas[])
     abund[toCells] <- a1 <- -dd * 10000/(sum(-dd, na.rm = TRUE))
     plot(abund)
@@ -125,7 +125,7 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
                             p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
+                            p_advectionMag = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir = windDirRas[])
     abund[toCells] <- a2 <- -dd1 * 10000/(sum(-dd1, na.rm = TRUE))
     plot(abund)
@@ -141,7 +141,7 @@ visualizeKernel <- function(p, massAttacksStack, maxDistance) {
                             p_meanDist = p_meanDist, p_sdDist = p["p_sdDist"], landscape = r,
                             propPineRas = r, fromCell = mid,
                             toCells = toCells,
-                            asymParam = p["p_advectionMag"], angle = ddd[, "angles"],
+                            p_advectionMag = p["p_advectionMag"], angle = ddd[, "angles"],
                             windDir =  windDirRas[])
     abund[toCells] <-  a3 <- -dd2 * 10000/(sum(-dd2, na.rm = TRUE))
     plot(abund)

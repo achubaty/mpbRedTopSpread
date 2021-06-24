@@ -1,11 +1,10 @@
 
-objFun <- function(p, propPineRas, # massAttacksRas,
-                   # p_advectionDir,
-                   # p_advectionMag,
-                   # minNumAgents,
-                   massAttacksStack, massAttacksDT, currentTime, reps = 10,
-                   quotedSpread, fitType = "ss1", omitPastPines, p_sdDist, dispersalKernel,
-                   maxDistance, windDirStack, windSpeedStack, subsampleFrom = NULL) {
+#' Objective function to minimize for mpbRedTopSpread
+objFun <- function(p, propPineRas,
+                   massAttacksStack, massAttacksDT,
+                   quotedSpread,
+                   omitPastPines, p_sdDist, dispersalKernel,
+                   maxDistance, windDirStack, windSpeedStack) {
 
   # DEoptim, when used across a network, inefficiently moves large objects every time
   #   it calls makes an objFun call. Better to move the objects to each node's disk,
@@ -16,18 +15,6 @@ objFun <- function(p, propPineRas, # massAttacksRas,
     massAttacksStack <- get("massAttacksStack", envir = .GlobalEnv)
   if (missing(massAttacksDT))
     massAttacksDT <- get("massAttacksDT", envir = .GlobalEnv)
-  # if (missing(massAttacksRas))
-  #   massAttacksRas <- get("massAttacksRas", envir = .GlobalEnv)
-  # if (missing(p_advectionDir))
-  #   p_advectionDir <- get("p_advectionDir", envir = .GlobalEnv)
-  # if (missing(p_advectionMag))
-  #   p_advectionMag <- get("p_advectionMag", envir = .GlobalEnv)
-  # if (missing(minNumAgents))
-  #   minNumAgents <- get("minNumAgents", envir = .GlobalEnv)
-  if (missing(currentTime))
-    currentTime <- get("currentTime", envir = .GlobalEnv)
-  if (missing(fitType))
-    fitType <- get("fitType", envir = .GlobalEnv)
   if (missing(omitPastPines))
     omitPastPines <- get("omitPastPines", envir = .GlobalEnv)
   if (missing(p_sdDist))
@@ -40,43 +27,27 @@ objFun <- function(p, propPineRas, # massAttacksRas,
     windDirStack <- get("windDirStack", envir = .GlobalEnv)
   if (missing(windSpeedStack))
     windSpeedStack <- get("windSpeedStack", envir = .GlobalEnv)
-  if (missing(subsampleFrom))
-    subsampleFrom <- get("subsampleFrom", envir = .GlobalEnv)
-
-  if (fitType == "likelihood") {
-    if (reps < 10) {
-      message("reps must be at least 10 if using likelihood; setting to 10")
-      reps <- 10
-    }
-  }
 
   allYears <- names(massAttacksStack)
 
-  combinations <- seq_along(allYears[-1])
   years <- data.frame(
     startYears = allYears[-length(allYears)],
     endYears = allYears[-1])
-  # combinations <- cbind(combinations, years[combinations[, "years"], ])
-  # combinations <- as.data.frame(combinations[, c("reps", "startYears", "endYears")])
 
   maxObjFunValIndiv <- -Inf
-  # mam <- raster::unstack(massAttacksStack)
   outBig <- purrr::pmap(
     .l = years, # this creates startYears and endYears because it is a data.frame
     massAttacksStack = massAttacksStack,
     massAttacksDT = massAttacksDT,
     maxDistance = maxDistance,
-    p = p, reps = reps,
-    # minNumAgents = minNumAgents,
+    p = p, # reps = reps,
     propPineRas = propPineRas,
     quotedSpread = quotedSpread,
-    fitType = fitType,
     omitPastPines = omitPastPines,
     windDirStack = windDirStack,
     windSpeedStack = windSpeedStack,
     dispersalKernel = dispersalKernel,
-    subsampleFrom = subsampleFrom,
-    .f = objFunInner
+    objFunInner # the function
   )
 
   sum(unlist(outBig), na.rm = TRUE)
@@ -92,25 +63,12 @@ objFunInner <- function(
   clNumber = NULL,
   p,
   ...,
-  objFunValOnFail = 1e3,
-  fitType, omitPastPines,
-  subsampleFrom = NULL
+  # objFunValOnFail = 1e3,
+  omitPastPines
 ) {
   layerName1 <- grep(startYears, names(massAttacksStack), value = TRUE)
 
   massAttacksDTThisYr <- massAttacksDT[layerName %in% layerName1]
-  if (!is.null(subsampleFrom)) {
-    if (Require:::isWindows() || amc::isRstudio())
-      message("subsampleFrom is not NULL; using ", floor(NROW(massAttacksDTThisYr)/subsampleFrom),
-              " from cells, about 1/", subsampleFrom)
-    massAttacksDTThisYr <- massAttacksDTThisYr[sort(sample(1:NROW(massAttacksDTThisYr), NROW(massAttacksDTThisYr)/subsampleFrom))]
-  }
-  # starts <- massAttackThisYr$pixel
-  # windDirVec <- massAttackThisYr$windDir
-  # windSpeedVec <- massAttackThisYr$windSpeed
-  # massAttackNextYr <- massAttackThisYr$ATKTREEStplus1
-  # if (FALSE) {
-  # massAttacksRas <- massAttacksStack[[startYears]]
   massAttacksRas <- raster(massAttacksStack[[startYears]])
   massAttacksRas[massAttacksDTThisYr$pixel] <- massAttacksDTThisYr$greenTreesYr_t # note green trees
   starts <- which(massAttacksRas[] > 0)
@@ -123,8 +81,9 @@ objFunInner <- function(
 
   # this env has all the list(...), plus inherits the environment(), meaning all the objs & args above
   ll <- list2env(list(...))
-  out <- lapply(seq_len(ll$reps), function(rep) as.data.table(eval(quotedSpread, envir = ll)))
-  out <- rbindlist(out, idcol = "rep")
+  out <- # lapply(seq_len(ll$reps), function(rep)
+    as.data.table(eval(quotedSpread, envir = ll))#)
+  # out <- rbindlist(out, idcol = "rep")
 
   if (omitPastPines) {
 
@@ -141,111 +100,26 @@ objFunInner <- function(
       pixels = which(x[] > 0)
       setDT(list(pixels = pixels, ATKTREES = x[][pixels]))
     })
-    massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "Year")
+    massAttacksDTYearsToPres <- rbindlist(massAttacksDTYearsToPres, idcol = "layerName")
   }
-  if (fitType == "distanceFromEachPoint") {
-    expectedNum <- out$val # * 1125 * prod(res(massAttacksRas))/1e4
 
-    # Rescale -- we are interested in the distribution, not the absolute values -- maybe?: TODO
-    # p_rescaler <- sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
-    p_rescaler <- p["p_rescaler"]
-    if (is.na(p_rescaler))
-      p_rescaler <- 2.2 # was best in one case
-    p_nbSize <- p["p_nbSize"]
-    if (is.na(p_nbSize))
-      p_nbSize <- 0.2 # was best in one case
-    if (is.na(p_rescaler)) p_rescaler <- 1
-    # likelihood
-    lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*p_rescaler, size = p_nbSize, log = TRUE)
-    theInfs <- is.infinite(lll)
-    if (any(theInfs)) {
-      lowestProb <- min(lll[!theInfs])
-      lll[theInfs] <- lowestProb
-    }
-    objFunVal <- lll
+  expectedNum <- out$val # * 1125 * prod(res(massAttacksRas))/1e4
 
-  } else {
-    stop("not tested recently; use fitType = 'distanceFromEachPoint'")
-    # Remove pixels that had already been attacked in the past -- emulating MPB Suppression efforts
-    if (omitPastPines)
-      atksKnownNextYr <- atksKnownNextYr[!massAttacksDTYearsToPres, on = "pixels"]
-
-    atksNextYearSims <- out[, list(abundSettled  = sum(abundSettled) ), by = c("rep", "pixels")]
-    # nPix <- atksNextYearSims[abundSettled > 0, .N] ## total number of pixels
-
-    ## attacked area from data
-    # atksKnownNextYr <- atksKnownNextYr[ATKTREES > 0]
-    # i <- 1
-    oo <- atksKnownNextYr[atksNextYearSims, on = "pixels", nomatch = NA]
-    set(oo, which(is.na(oo$ATKTREES)), "ATKTREES", 0L)
-    # oo <- atksNextYearSims[atksKnownNextYr, on = "pixels", nomatch = NA]
-    if (reps > 1)
-      oo[, ATKTREES := ATKTREES[1], by = "pixels"]
-
-    #i <- 0
-    if (fitType == "likelihood") {
-      stop("not tested recently")
-      probs <- oo[, list(prob = {
-        prob <- if (.N > 2) {
-          i <<- i + 1
-          # print(i)
-
-          max(1e-14, demp(ATKTREES[1], abundSettled))
-
-        } else {
-          1e-14
-        }
-      }), by = "pixels"]
-      objFunVal <- sum(-log(probs$prob))
-    } else {
-      oo[is.na(abundSettled),  abundSettled := 0]
-      if (fitType == "ss1") {
-        objFunVal <- sum((oo$ATKTREES - oo$abundSettled)^2)
-      } else {
-        #if (startYears == "X2010") browser()
-        # To balance the zeros and non-zeros, must sub-sample the zeros so there are equal
-        #   number as the non-zeros
-        whNonZero <- oo$ATKTREES > 0
-        numNonZero <- tabulate(as.integer(whNonZero))
-        whZero <- which(!whNonZero)
-        whNonZero <- which(whNonZero)
-
-        # There are way more zeros than non zeros. We need to sub-sample the zeros or
-        #   they influence the objFun too much. Here, hard coded -- take 1/4 of the number
-        #   of zeros as there are non-zeros
-        samZero <- sample(whZero, size = round(numNonZero/4, 0))
-        samNonZero <- sample(whNonZero, size = numNonZero)
-        sam <- c(samZero, samNonZero)
-        atkTrees <- oo$ATKTREES[sam]
-        abundSett <- oo$abundSettled[sam]
-
-        # Rescale so that this is a relative abundance
-        ratio <- sum(abundSett)/sum(atkTrees)
-        abundSettRescaled <- abundSett/ratio
-
-        if (fitType == "logSAD") {
-          objFunVal <- log(abs(atkTrees - abundSettRescaled))
-        } else if (fitType == "SAD") {
-          objFunVal <- abs(atkTrees - abundSettRescaled)
-        } else {
-          stop("fitType must be logSAD or SAD")
-        }
-        # browser()
-        isInf <- is.infinite(objFunVal)
-        if (any(isInf)) {
-          if (all(isInf)) {
-            negInf <- objFunVal < 0
-            if (any(negInf))
-              objFunVal[isInf] <- 0
-            if (any(!negInf))
-              objFunVal[isInf] <- objFunValOnFail
-          } else {
-            objFunVal[isInf] <- max(objFunVal[!isInf], na.rm = TRUE)
-          }
-        }
-      }
-    }
+  # Rescale -- we are interested in the distribution, not the absolute values -- maybe?: TODO
+  # p_rescaler <- sum(atksKnownNextYr$ATKTREES)/sum(expectedNum)
+  p_rescaler <- p["p_rescaler"]
+  if (is.na(p_rescaler))
+    p_rescaler <- 1 # 2.2 # was best in one case
+  if (is.na(p_rescaler)) p_rescaler <- 1
+  # likelihood
+  lll <- dnbinom(round(atksKnownNextYr$ATKTREES), mu = expectedNum*p_rescaler, size = 0.2, log = TRUE)
+  theInfs <- is.infinite(lll)
+  if (any(theInfs)) {
+    lowestProb <- min(lll[!theInfs])
+    lll[theInfs] <- lowestProb
   }
+  objFunVal <- lll
+
   objFunVal <- -round(sum(objFunVal, na.rm = TRUE), 3) # negative so optimizer does minimize
   # message(paste("Done startYear: ", startYears, " ObjFunVal: ", objFunVal))
   return(objFunVal)
