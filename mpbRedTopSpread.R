@@ -31,6 +31,8 @@ defineModule(sim, list(
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)",
                   "tmap"),
   parameters = rbind(
+    defineParameter("cachePredict", "logical", TRUE, NA, NA,
+                    "The function predictQuotedSpread can be Cached or not; default is TRUE"),
     defineParameter("dataset", "character", "Boone2011", NA, NA, "Which dataset to use for stand dynamic model fitting. One of 'Boone2011' (default), 'Berryman1979_fit', or 'Berryman1979_forced'. Others to be implemented later."),
     defineParameter("growthInterval", "numeric", 1, NA, NA, "This describes the interval time between growth events"),
     # defineParameter("p_advectionDir", "numeric", 90, 0, 359.9999,
@@ -411,6 +413,7 @@ dispersalPredict <- function(sim) {
                        pineThreshold = 0.3,
                        dispersalKernel = P(sim)$dispersalKernel,
                        clNumber = 12,
+                       useCache = P(sim)$cachePredict,
                        maxDistance = P(sim)$maxDistance,
                        quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
                        .cacheExtra = format(P(sim)$quotedSpread), # cache this instead
@@ -425,6 +428,7 @@ dispersalPredict <- function(sim) {
 }
 
 Validate <- function(sim) {
+  startToEnd <- paste0(start(sim), " to ", end(sim), "_", Sys.time())
 
   if (is.null(sim$DEout)) {
     DEoutFileList <- dir("outputs", pattern = "DEout", full.names = TRUE)
@@ -467,7 +471,7 @@ Validate <- function(sim) {
       setnames(DEoutPop, new = names(p))
       DEoutPop <- melt(DEoutPop, measure = colnames(DEoutPop), variable.name = "Parameter")
 
-      Plots(DEoutPop, plotHistsOfDEoptimPars, title = "Parameter histograms from DEoptim",
+      Plots(DEoutPop, plot_HistsOfDEoptimPars, title = "Parameter histograms from DEoptim",
             filename = paste0("Histograms of parameters from DEoptim ", Sys.time()))
 
 
@@ -505,7 +509,7 @@ Validate <- function(sim) {
       #   cor.test(sim$predictedStack[][, x], sim$massAttacksStack[][, x], use = "complete.obs"))
 
       if (length(names(sim$massAttacksStack)) > 1) {
-        corByYr <- cor(sim$predictedStack[], sim$massAttacksStack[], use = "complete.obs", method = "spearman")
+        corByYr <- cor(sim$predictedStack[], sim$massAttacksStack[], use = "complete.obs")
         message("Avg correlation of time series: ", round(corByYrAvg <- mean(diag(corByYr)), 3))
       }
 
@@ -527,7 +531,6 @@ Validate <- function(sim) {
       }
       massAttacksStackLog <- if (nlayers(mam) > 1) sum(mam) else mam[[1]]
       massAttacksStackLog[] <- log(massAttacksStackLog[] + 1)
-      # 3setColors(massAttacksStackLog, n = 5) <- c("yellow", "orange" , "red", "purple", "blue")
 
       # cumulative maps
       pred <- sim$predictedStack
@@ -558,8 +561,13 @@ Validate <- function(sim) {
                                       apmBuff, threshold = sim$thresholdAttackTreesMinDetectable,
                                       plot = TRUE)
 
-      print(paste("ROC mean value: ", round(mean(stackPredVObs$ROCs$ROC), 3)))
+      obsPredDT <- makeAnnualMeansDT(sim$predictedStack, sim$massAttacksStack)
+      Plots(fn = plot_ObsVPredAbund1, dt = obsPredDT, #types = "screen",
+            filename = paste0("Annual Means: Obs v Pred ", startToEnd))
+      Plots(fn = plot_ObsVPredAbund1, dt = obsPredDT, #types = "screen",
+            filename = paste0("Annual Means: Year v Obs and Pred ", startToEnd))
 
+      print(paste("ROC mean value: ", round(mean(stackPredVObs$ROCs$ROC, na.rm = TRUE), 3)))
 
       messageDF(stackPredVObs$ROCs)
       sim$ROCList[[iii]] <- stackPredVObs$ROCs
@@ -569,14 +577,14 @@ Validate <- function(sim) {
 
   current.mode <- tmap_mode("plot")
   clearPlot()
-  startToEnd <- paste0(start(sim), " to ", end(sim), "_", Sys.time())
+
   fn1 = file.path(outputPath(sim), "figures", paste0(Par$type, ": stks predicted vs. observed ", startToEnd))
 
   # tmap doesn't work with Plots yet... do manually
-  #Plots(sim$absk, ggplotStudyAreaFn,
+  #Plots(sim$absk, plot_StudyAreaFn,
   #filename = file.path(outputPath(sim), paste0(Par$type, ": stks predicted vs. observed ", startToEnd)),
   #ggsaveArgs = list(width = 8, height = 10, units = "in", dpi = 300),
-  tm_stks_predvObs <- ggplotStudyAreaFn(
+  tm_stks_predvObs <- plot_StudyAreaFn(
         absk = sim$absk, cols = "darkgreen", sf::st_as_sf(sim$studyArea),
         massAttacksStackLog, pred = predictCumulativeLog,
         propPineMap = sim$propPineRas,
@@ -631,7 +639,7 @@ Validate <- function(sim) {
   edgesDTLong <- melt(edgesDT, measure = patterns("Edge"))
   edgesDTLong[, value := c(NA, diff(value))/1e3, by = c("type", "variable")]
   edgesDTLong[, xy := gsub("Edge", "", variable)]
-  Plots(edgesDTLong, plotCentroidShift,
+  Plots(edgesDTLong, plot_CentroidShift,
         title = "Predicted vs. Observed edge displacment each year",
         ggsaveArgs = list(width = 8, height = 10, units = "in", dpi = 300),
         filename = paste0(Par$type, ": Edge Displacement Pred vs Observed ", startToEnd))
@@ -655,7 +663,7 @@ Validate <- function(sim) {
   centroidsLong[, UTM := value]
   centroidsLong[, value := c(NA, diff(value))/1e3, by = c("variable")]
 
-  Plots(centroidsLong, plotCentroidShift, title = "Predicted vs. Observed centroid displacment each year",
+  Plots(centroidsLong, plot_CentroidShift, title = "Predicted vs. Observed centroid displacment each year",
         ggsaveArgs = list(width = 8, height = 10, units = "in", dpi = 300),
         filename = paste0(Par$type, ": Centroid Displacement Pred vs Observed ",
                                                      startToEnd))
@@ -704,7 +712,7 @@ Validate <- function(sim) {
 }
 
 ##########################
-ggplotStudyAreaFn <- function(absk, cols, studyArea, mam, pred, propPineMap, minThreshold) {
+plot_StudyAreaFn <- function(absk, cols, studyArea, mam, pred, propPineMap, minThreshold) {
   mam[mam[] == 0] <- NA
   pred[pred[] < log(minThreshold * 12)] <- NA
   pred[] <- pred[] * 0.7
@@ -1082,10 +1090,12 @@ createStackPredAndObs <- function(massAttacksStack, predictedStack, threshold = 
   stk <- raster::stack()
   for (lay in seq(yrNamesPlus1)) {
     setColors(predictedStack[[yrNamesPlus1[lay]]], 8) <- "Reds"
-    AllThree <- raster(massAttacksStack[[lay]])
-    whCA <- which(!is.na(massAttacksStack[[lay]][]))
+    AllThree <- raster(predictedStack[[yrNamesPlus1[lay]]])
     AllThree[] <- 0
-    AllThree[whCA] <- 1
+    if (yrNames[lay] %in% names(massAttacksStack)) {
+      whCA <- which(!is.na(massAttacksStack[[lay]][]))
+      AllThree[whCA] <- 1
+    }
     if (yrNamesPlus1[lay] %in% names(massAttacksStack)) {
       whNY <- which(!is.na(massAttacksStack[[yrNamesPlus1[lay]]][]))
       AllThree[whNY] <- AllThree[whNY] + 2
@@ -1119,14 +1129,17 @@ stacksPredVObs <- function(massAttacksStack, predictedStack, propPineMap, thresh
   for (lay in seq(yrNamesPlus1)) {
 
     preds <- predictedStack[[yrNamesPlus1[lay]]][]
-    # preds[preds < threshold] <- 0
-    whHasVal <- which(!is.na(preds) |
-            !is.na(massAttacksStack[[lay]][]) |
-            propPineMap[] > 0)
+    whHasVal <- if (yrNames[lay] %in% names(massAttacksStack)) {
+      which(!is.na(preds) |
+                          !is.na(massAttacksStack[[lay]][]) |
+                          propPineMap[] > 0)
+    } else {
+      which(!is.na(preds))
+    }
     preds[is.na(preds)] <- 0
 
     # setColors(predictedStack[[yrNamesPlus1[lay]]], 8) <- "Reds"
-    Both <- raster(massAttacksStack[[lay]])
+    Both <- raster(predictedStack[[yrNamesPlus1[lay]]])
     best <- raster(Both)
     # whCA <- which(!is.na(massAttacksStack[[yrNamesPlus1[lay]]][]))
     Both[] <- 0
@@ -1202,7 +1215,7 @@ centroidChange <- function(stk, propPineRas) {
   centroids
 }
 
-plotCentroidShift <- function(centroids, title) {
+plot_CentroidShift <- function(centroids, title) {
   ggplot(centroids[], aes(x = layerName, y = value, group = xy, color = type)) +
     geom_point() +
     facet_grid(vars(xy), scales = "free_y") +
@@ -1210,7 +1223,7 @@ plotCentroidShift <- function(centroids, title) {
     ggtitle(title)
 }
 
-plotHistsOfDEoptimPars <- function(fit_mpbSpreadOptimizer, title) {
+plot_HistsOfDEoptimPars <- function(fit_mpbSpreadOptimizer, title) {
   (paramHists <- fit_mpbSpreadOptimizer %>%
     ggplot( aes(x=value, fill=Parameter)) +
     geom_histogram() +# color="#e9ecef", alpha=0.6, position = 'identity') +
@@ -1222,6 +1235,7 @@ plotHistsOfDEoptimPars <- function(fit_mpbSpreadOptimizer, title) {
 growPredict <- function(sim) {
   if (time(sim) == start(sim)) {
     massAttacksDTforPredict <- data.table::copy(sim$massAttacksDT)
+    massAttacksDTforPredict <- massAttacksDTforPredict[grep(time(sim), layerName), ]
   } else {
     massAttacksDTforPredict <- data.table::copy(sim$predictedDT)
   }
@@ -1253,3 +1267,30 @@ estimateMinAttackThresh <- function(p_minDensityThresh, meanAttackStk, predicted
   2 - mean(stackPredVObs$ROCs$sumSensSpecAtThreshold)
 }
 
+
+makeAnnualMeansDT <- function(pred, obs) {
+  predM <- pred[]
+  predMean <- colMeans(predM, na.rm = TRUE)
+  obsM <- obs[]
+  obsMean <- colMeans(obsM, na.rm = TRUE)
+  dt <- data.table(`Predicted Mean` = predMean,
+                   `Observed Mean` = obsMean, Year = names(predMean))
+  dt
+}
+plot_ObsVPredAbund1 <- function(dt) {
+  ggplot(dt, aes(x = `Observed Mean`, y = `Predicted Mean`)) +
+    geom_point() +
+    theme_bw() +
+    xlab("Observed mean attack density, per year") +
+    ylab("Predicted mean attack density, per year")
+}
+
+plot_ObsVPredAbund2 <- function(dt) {
+  dtL <- melt(dt, id.vars = "Year")
+  ggplot(dtL, aes(x = Year, y = value, group = variable, col = variable)) +
+    geom_line() +
+    theme_bw() +
+    scale_y_continuous(trans='log') +
+    xlab("Year") +
+    ylab("Predicted and Observed mean attack density, per year")
+}
