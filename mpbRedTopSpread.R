@@ -398,7 +398,7 @@ Init <- function(sim) {
 
 dispersalPredict <- function(sim) {
   if (is.null(sim$thresholdAttackTreesMinDetectable))
-    sim$thresholdAttackTreesMinDetectable <- 70
+    sim$thresholdAttackTreesMinDetectable <- 4.0 # this is best from DEoptim
 
   pBest <- sim$DEout$optim$bestmem
 
@@ -420,13 +420,7 @@ dispersalPredict <- function(sim) {
   )
 
   predictedDT <- predictedDT[get(colNameForPrediction) > sim$thresholdAttackTreesMinDetectable]
-  # predictedDT[, val := val/2]
-  # predictedDT[, `:=`(
-  #   pixel = cellFromXY(sim$massAttacksStack, cbind(x, y)),
-  #   layerName = paste0("X", as.numeric(gsub("X", "", Year)) + 1)
-  # )]
   predictedDT[, CLIMATE := sim$climateSuitabilityMaps[[unique(layerName)]][pixel]]
-  # setnames(predictedDT, "val", "ATKTREES")
   return(rbindlist(list(sim$predictedDT, predictedDT), use.names = TRUE, fill = TRUE))
 }
 
@@ -561,6 +555,7 @@ Validate <- function(sim) {
       print(paste("ROC mean value: ", round(mean(stackPredVObs$ROCs$ROC), 3)))
 
 
+      messageDF(stackPredVObs$ROCs)
       sim$ROCList[[iii]] <- stackPredVObs$ROCs
     }
   }
@@ -1143,7 +1138,7 @@ stacksPredVObs <- function(massAttacksStack, predictedStack, propPineMap, thresh
       if (isTRUE(plot.it)) {
         plot(dt$OneMinusSpec, dt$Sens, type = "l", main = yrNamesPlus1[lay])
         abline(a = 0, b = 1, lty = "dashed")
-        print(paste("year: ", yrNamesPlus1[lay],", threshold: ", threshold, ", ROC: ", round(ROCs[[lay]]$ROC, 2)))
+        # print(paste("year: ", yrNamesPlus1[lay],", threshold: ", threshold, ", ROC: ", round(ROCs[[lay]]$ROC, 2)))
       }
     }
     stk <- addLayer(stk, Both)
