@@ -72,6 +72,8 @@ defineModule(sim, list(
                     "Should this entire module be run with caching activated?")
   ),
   inputObjects = bindrows(
+    expectsInput(objectName = "absk", objectClass = "SpatialPolygonsDataFrame",
+                 desc = "Alberta and Saskatchewan political outlines"),
     expectsInput("climateSuitabilityMaps", "RasterStack",
                  "A time series of climatic suitablity RasterLayers, each with previx 'X' and the year, e.g., 'X2010'"),
     expectsInput("massAttacksStack", "RasterStack",
@@ -98,7 +100,7 @@ defineModule(sim, list(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
     createsOutput("massAttacksStack", "RasterStack",
                  "This will be the same data as the inputted object, but will have a different resolution."),
-    createsOutput("DEout", "list", "The output object from DEoptim"),
+    createsOutput("fit_mpbSpreadOptimizer", "list", "The output object from DEoptim"),
     createsOutput("propPineRas", "RasterLayer",
                   paste("Proportion (not percent) cover map of *all* pine. This will",
                         " be the pixel-based sum if there are more than one layer")),
@@ -147,13 +149,13 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                                      sim$massAttacksStack, mod$growthData)
          },
          "growPredict" = {
-           if (is.null(sim$DEout)) {
-             message("A DEout object should probably be supplied")
+           if (is.null(sim$fit_mpbSpreadOptimizer)) {
+             message("A fit_mpbSpreadOptimizer object should probably be supplied")
              optimOutFileList <- dir("outputs", pattern = "optimOut", full.names = TRUE)
-             sim$DEout <- readRDS(optimOutFileList[[3]])
-             DEoutFileList <- dir("outputs", pattern = "DEout", full.names = TRUE)
-             sim$DEout <- readRDS(DEoutFileList[[23]])
-             sim$DEout <- colnamesToDEout(sim$DEout, c("p_meanDist", "p_advectionMag", "p_sdDist"))
+             sim$fit_mpbSpreadOptimizer <- readRDS(optimOutFileList[[3]])
+             DEoutFileList <- dir("outputs", pattern = "fit_mpbSpreadOptimizer", full.names = TRUE)
+             sim$fit_mpbSpreadOptimizer <- readRDS(DEoutFileList[[23]])
+             sim$fit_mpbSpreadOptimizer <- colnamesToDEout(sim$fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist"))
            }
            sim$massAttacksDT_1Yr <- growPredict(sim)
 
@@ -165,7 +167,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
          },
          "dispersalFit" = {
-           sim$DEout <- dispersalFit(quotedSpread = P(sim)$quotedSpread,
+           sim$fit_mpbSpreadOptimizer <- dispersalFit(quotedSpread = P(sim)$quotedSpread,
                              propPineRas = sim$propPineRas, studyArea = sim$studyArea,
                              massAttacksDT = sim$massAttacksDT,
                              massAttacksStack = sim$massAttacksStack,
@@ -397,10 +399,8 @@ Init <- function(sim) {
 }
 
 dispersalPredict <- function(sim) {
-  if (is.null(sim$thresholdAttackTreesMinDetectable))
-    sim$thresholdAttackTreesMinDetectable <- 4.0 # this is best from DEoptim
 
-  pBest <- sim$DEout$optim$bestmem
+  pBest <- sim$fit_mpbSpreadOptimizer$optim$bestmem
 
   colNameForPrediction <- "ATKTREES"
   predictedDT <- Cache(predictQuotedSpread,
@@ -419,19 +419,19 @@ dispersalPredict <- function(sim) {
                        omitArgs = "quotedSpread"
   )
 
-  predictedDT <- predictedDT[get(colNameForPrediction) > sim$thresholdAttackTreesMinDetectable]
+  # predictedDT <- predictedDT[get(colNameForPrediction) > sim$thresholdAttackTreesMinDetectable]
   predictedDT[, CLIMATE := sim$climateSuitabilityMaps[[unique(layerName)]][pixel]]
   return(rbindlist(list(sim$predictedDT, predictedDT), use.names = TRUE, fill = TRUE))
 }
 
 Validate <- function(sim) {
 
-  if (is.null(sim$DEoptim)) {
+  if (is.null(sim$DEout)) {
     DEoutFileList <- dir("outputs", pattern = "DEout", full.names = TRUE)
-    DEout <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
+    fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
   }
 
-  DEouts <- list(DEout)
+  DEouts <- list(fit_mpbSpreadOptimizer)
 
   sim$ROCList <- list()
 
@@ -452,23 +452,23 @@ Validate <- function(sim) {
 
     }
 
-    if (length(DEout$optim$bestmem) %in% 3:4 || iii > 20) {
-      if (all(grepl("par[[:digit:]]", names(DEout$optim$bestmem))))
-        if (length(DEout$optim$bestmem) == 3) {
-          DEout <- colnamesToDEout(DEout, c("p_meanDist", "p_advectionMag", "p_sdDist"))
-        } else if  (length(DEout$optim$bestmem) == 4) {
-          DEout <- colnamesToDEout(DEout, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+    if (length(fit_mpbSpreadOptimizer$optim$bestmem) %in% 3:4 || iii > 20) {
+      if (all(grepl("par[[:digit:]]", names(fit_mpbSpreadOptimizer$optim$bestmem))))
+        if (length(fit_mpbSpreadOptimizer$optim$bestmem) == 3) {
+          fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist"))
+        } else if  (length(fit_mpbSpreadOptimizer$optim$bestmem) == 4) {
+          fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
         }
 
-      p <- DEout$optim$bestmem # replace with values from disk object
+      p <- fit_mpbSpreadOptimizer$optim$bestmem # replace with values from disk object
 
 
-      DEoutPop <- as.data.table(DEout$member$pop)
+      DEoutPop <- as.data.table(fit_mpbSpreadOptimizer$member$pop)
       setnames(DEoutPop, new = names(p))
       DEoutPop <- melt(DEoutPop, measure = colnames(DEoutPop), variable.name = "Parameter")
 
       Plots(DEoutPop, plotHistsOfDEoptimPars, title = "Parameter histograms from DEoptim",
-            filename = file.path(outputPath(sim),paste0("Histograms of parameters from DEoptim ", Sys.time())))
+            filename = paste0("Histograms of parameters from DEoptim ", Sys.time()))
 
 
       # Way to identify quantiles
@@ -505,7 +505,7 @@ Validate <- function(sim) {
       #   cor.test(sim$predictedStack[][, x], sim$massAttacksStack[][, x], use = "complete.obs"))
 
       if (length(names(sim$massAttacksStack)) > 1) {
-        corByYr <- cor(sim$predictedStack[], sim$massAttacksStack[], use = "complete.obs")
+        corByYr <- cor(sim$predictedStack[], sim$massAttacksStack[], use = "complete.obs", method = "spearman")
         message("Avg correlation of time series: ", round(corByYrAvg <- mean(diag(corByYr)), 3))
       }
 
@@ -537,18 +537,24 @@ Validate <- function(sim) {
       predictCumulativeLog <- sum(pred)
       predictCumulativeLog[] <- log(predictCumulativeLog[] + 1)
 
-      # Find numAttackTrees minimum threshold that defines detectable
-      message("Estimating the predicted attack density minimum threshold to be considered detectable")
-      system.time(optimAttackTreesMinDetectable <- Cache(optimize, f = estimateMinAttackThresh, interval = c(0.001, 200),
-                                                         meanAttackStk = sim$massAttacksStack, .cacheExtra = fnHash,
-                                                         predictedStk = sim$predictedStack, propPineRast = sim$propPineRas,
-                                                         tol = 0.001
-      ))
 
-      sim$thresholdAttackTreesMinDetectable <- optimAttackTreesMinDetectable$minimum
+      if (tolower(Par$type) == "validate") {
+        # Find numAttackTrees minimum threshold that defines detectable
+        message("Estimating (using ROC) the predicted attack density minimum threshold ",
+                " to be considered detectable")
+        system.time(optimAttackTreesMinDetectable <- Cache(optimize, f = estimateMinAttackThresh, interval = c(0.001, 200),
+                                                           meanAttackStk = sim$massAttacksStack, .cacheExtra = fnHash,
+                                                           predictedStk = sim$predictedStack, propPineRast = sim$propPineRas,
+                                                           tol = 0.001
+        ))
+        sim$thresholdAttackTreesMinDetectable <- optimAttackTreesMinDetectable$minimum
+      } else {
+        sim$thresholdAttackTreesMinDetectable <- 4.0 # this is best from DEoptim
+      }
+
 
       # ROC curves
-      stackPredVObs <- stacksPredVObs(sim$massAttacksStack, sim$predictedStack,
+      stackPredVObs <- Cache(stacksPredVObs, sim$massAttacksStack, sim$predictedStack,
                                       apmBuff, threshold = sim$thresholdAttackTreesMinDetectable,
                                       plot = TRUE)
 
@@ -562,12 +568,26 @@ Validate <- function(sim) {
   # current.mode <- tmap_mode("view")
 
   current.mode <- tmap_mode("plot")
-  Plots(sim$absk, ggplotStudyAreaFn, absk = sim$absk, cols = "darkgreen", sf::st_as_sf(sim$studyArea),
+  clearPlot()
+  startToEnd <- paste0(start(sim), " to ", end(sim), "_", Sys.time())
+  fn1 = file.path(outputPath(sim), "figures", paste0(Par$type, ": stks predicted vs. observed ", startToEnd))
+
+  # tmap doesn't work with Plots yet... do manually
+  #Plots(sim$absk, ggplotStudyAreaFn,
+  #filename = file.path(outputPath(sim), paste0(Par$type, ": stks predicted vs. observed ", startToEnd)),
+  #ggsaveArgs = list(width = 8, height = 10, units = "in", dpi = 300),
+  tm_stks_predvObs <- ggplotStudyAreaFn(
+        absk = sim$absk, cols = "darkgreen", sf::st_as_sf(sim$studyArea),
         massAttacksStackLog, pred = predictCumulativeLog,
         propPineMap = sim$propPineRas,
-        filename = file.path(outputPath(sim), paste0("stks predicted vs. observed ", start(sim), " to ", end(sim), Sys.time())),
-        ggsaveArgs = list(width = 8, height = 10, units = "in", dpi = 300),
         minThreshold = sim$thresholdAttackTreesMinDetectable)
+  if ("screen" %in% Par$.plots) {
+    tm_stks_predvObs
+  }
+  if (any(Par$.plots %in% ggplotClassesCanHandle)) {
+    tmap_save(tm_stks_predvObs, filename = paste0(fn1, ".", Par$.plots),
+              width = 8, height = 10, units = "in", dpi = 300)
+  }
 
   ss <- lapply(raster::unstack(stackPredVObs$stk), function(ras) {
     freqs <- table(ras[])
@@ -614,9 +634,7 @@ Validate <- function(sim) {
   Plots(edgesDTLong, plotCentroidShift,
         title = "Predicted vs. Observed edge displacment each year",
         ggsaveArgs = list(width = 8, height = 10, units = "in", dpi = 300),
-        filename = file.path(outputPath(sim), paste0("Edge Displacement Pred vs Observed ",
-                                                     start(sim), " to ", end(sim),
-                                                     "_", Sys.time())))
+        filename = paste0(Par$type, ": Edge Displacement Pred vs Observed ", startToEnd))
 
 
 
@@ -639,9 +657,8 @@ Validate <- function(sim) {
 
   Plots(centroidsLong, plotCentroidShift, title = "Predicted vs. Observed centroid displacment each year",
         ggsaveArgs = list(width = 8, height = 10, units = "in", dpi = 300),
-        filename = file.path(outputPath(sim), paste0("Centroid Displacement Pred vs Observed ",
-                                                     start(sim), " to ", end(sim),
-                                                     "_", Sys.time())))
+        filename = paste0(Par$type, ": Centroid Displacement Pred vs Observed ",
+                                                     startToEnd))
 
 
   # Displacement Table
@@ -654,12 +671,14 @@ Validate <- function(sim) {
   corNorthDisplacement <- cor(centroids$NorthObs, centroids$NorthPred, method = "spearman")
   sim$correlationsDisplacement <- c(East = corEastDisplacement, North = corNorthDisplacement)
 
-  centroids[, FiveYrPd := rep(c(paste0(layerName[1],"/",layerName[5]), paste0(layerName[6],"/",layerName[10])), each = 5)]
+  if (end(sim) - start(sim) >= 10) {
+    centroids[, FiveYrPd := rep(c(paste0(layerName[1],"/",layerName[5]), paste0(layerName[6],"/",layerName[10])), each = 5)]
 
-  centroids5Y <- centroids[, lapply(.SD, function(x) sum(x)), by = FiveYrPd,
-                           .SDcols = c("EastObs", "NorthObs", "EastPred", "NorthPred")]
-  centroids <- rbindlist(list(centroids, centroids5Y), fill = TRUE)
-  centroids[is.na(layerName), layerName := FiveYrPd]
+    centroids5Y <- centroids[, lapply(.SD, function(x) sum(x)), by = FiveYrPd,
+                             .SDcols = c("EastObs", "NorthObs", "EastPred", "NorthPred")]
+    centroids <- rbindlist(list(centroids, centroids5Y), fill = TRUE)
+    centroids[is.na(layerName), layerName := FiveYrPd]
+  }
 
   centroids2 <- as.data.table(t(centroids[, list(NorthObs, NorthPred, EastObs, EastPred)]))
   setnames(centroids2, centroids$layerName)
@@ -677,9 +696,8 @@ Validate <- function(sim) {
       columns = grep(value = TRUE, "^X.+/.+", colnames(centroids2))
     )
   gtsave(sim$displacementTable,
-         filename = file.path(outputPath(sim),
-                              .suffix("displacementTable.png",
-                                      paste0("_10yr_From", start(sim), "_", Sys.time()))))
+         filename = file.path(outputPath(sim), "figures",
+                              paste0(Par$type, ": displacementTable ", startToEnd, ".png")))
 
 
   return(invisible(sim))
@@ -707,12 +725,12 @@ ggplotStudyAreaFn <- function(absk, cols, studyArea, mam, pred, propPineMap, min
   t3 <- tm_shape(propPineMap) + tm_raster(title = "Pine Cover (prop)", alpha = 0.6, palette = "Greens")
   t3b <- t3 + tm_legend(show = FALSE)
   t4 <- tm_shape(pred) + tm_raster(title = "MPB log(Attacked trees)", alpha = 0.8, palette = "YlOrRd", style = "fixed", breaks = brks)
-  tpred <- t3 + t4 + t1
+  tpred <- t3 + t4 + t1 + tm_legend(show = TRUE, position = c("right", "top"))
   if (viewMode) {
     tpred
   } else {
-    tpred <- tpred + tm_compass(type  = "4star", position = c("right", "top"), north = 10) + tm_layout(title = "Predicted")
-    tmam <- t3b + t2 + t1 + tm_layout(title = "Observed")
+    tpred <- tpred + tm_layout(title = "Predicted")
+    tmam <- t3b + t2 + t1 + tm_compass(type  = "4star", position = c("right", "top"), north = 10) + tm_layout(title = "Observed")
     tmap_arrange(tmam, tpred)
   }
 }
@@ -721,7 +739,7 @@ ggplotStudyAreaFn <- function(absk, cols, studyArea, mam, pred, propPineMap, min
 
 ### plotting
 plotFn <- function(sim) {
-  pBest <- sim$DEout$optim$bestmem
+  pBest <- sim$fit_mpbSpreadOptimizer$optim$bestmem
 
   plotKernels(pBest)
 
@@ -828,7 +846,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                        numCoresNeeded = numCoresNeeded, adjustments = adjustments)
     on.exit(try(stopCluster(cl), silent = TRUE), add = TRUE)
     message("Starting DEoptim")
-    DEout <- DEoptim(fn = objFun,
+    fit_mpbSpreadOptimizer <- DEoptim(fn = objFun,
                      lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
                      upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
                      # reps = 1,
@@ -838,21 +856,21 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                                itermax = 60,
                                                NP = numCoresNeeded))
 
-    DEout <- colnamesToDEout(DEout, names(p))
-    saveRDS(DEout, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
+    fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, names(p))
+    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
     sim2 <- get("sim", whereInStack("sim"))
     parms <- params(sim2)
     saveRDS(parms, file = file.path("outputs", paste0("parms_", format(stPre), ".rds")))
     try(parallel::stopCluster(cl), silent = TRUE)
 
   } else if (isTRUE(type == "runOnce")) {
-    DEoutFileList <- dir("outputs", pattern = "DEout", full.names = TRUE)
-    DEout <- readRDS(tail(DEoutFileList, 1))
-    if (length(colnames(DEout$member$pop)) == 0) {
-      message("Please add names to parameter vector in DEout")
-      DEout <- colnamesToDEout(DEout, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+    DEoutFileList <- dir("outputs", pattern = "fit_mpbSpreadOptimizer", full.names = TRUE)
+    fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1))
+    if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
+      message("Please add names to parameter vector in fit_mpbSpreadOptimizer")
+      fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
     }
-    pBest <- DEout$optim$bestmem[] # use [] to keep names
+    pBest <- fit_mpbSpreadOptimizer$optim$bestmem[] # use [] to keep names
     pBest["p_sdDist"] <- 0.08
     pBest <- p
     out <- objFun(quotedSpread = quotedSpread, # reps = 1,
@@ -865,7 +883,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                        reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = FALSE
                         )
     on.exit(try(parallel::stopCluster(cl)), add = TRUE)
-    optimOut <- optimParallel::optimParallel(fn = objFun, par = p,
+    fit_mpbSpreadOptimizer <- optimParallel::optimParallel(fn = objFun, par = p,
                                              lower = lower,
                                              upper = upper,
                                              method = "L-BFGS-B",
@@ -873,14 +891,13 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                              control = list(trace = 3, factr = 1e6),
                                              parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE)
                                              )
-    saveRDS(optimOut, file = file.path("outputs", paste0("optimOut_", format(stPre), ".rds")))
+    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("optimOut_", format(stPre), ".rds")))
   }
   try(parallel::stopCluster(cl))
   stPost <- Sys.time()
   print(difftime(stPost, stPre))
-  browser()
 
-  return(invisible(DEout))
+  return(invisible(fit_mpbSpreadOptimizer))
 }
 
 
@@ -953,7 +970,7 @@ grow <- function(massAttacksDT, dataset, massAttacksStack, growthData, year = NU
 hist.DEoptim <- function(DEobj, paramNames) {
   dt <- as.data.table(DEobj$member$pop)
   if (missing(paramNames))
-    paramNames <- names(MPBfit$DEout$optim$bestmem)
+    paramNames <- names(MPBfit$fit_mpbSpreadOptimizer$optim$bestmem)
   colnames(dt) <- paramNames
   dt <- melt(dt, measure.vars = seq(NCOL(dt)))
   gg <- ggplot(dt, aes(x = value)) +
@@ -1054,9 +1071,14 @@ yrNamesPlus1 <- function(yrNames) {
   paste0("X", as.integer(yrNames) + 1)
 }
 
+yrNamesMinus1 <- function(yrNames) {
+  yrNames <- gsub("X([[:digit:]]{4,4})", "\\1", yrNames)
+  paste0("X", as.integer(yrNames) - 1)
+}
+
 createStackPredAndObs <- function(massAttacksStack, predictedStack, threshold = 1) {
-  yrNames <- names(massAttacksStack)
-  yrNamesPlus1 <- yrNamesPlus1(yrNames)
+  yrNamesPlus1 <- names(predictedStack)
+  yrNames <- yrNamesMinus1(yrNamesPlus1)
   stk <- raster::stack()
   for (lay in seq(yrNamesPlus1)) {
     setColors(predictedStack[[yrNamesPlus1[lay]]], 8) <- "Reds"
@@ -1084,8 +1106,10 @@ createStackPredAndObs <- function(massAttacksStack, predictedStack, threshold = 
 
 
 stacksPredVObs <- function(massAttacksStack, predictedStack, propPineMap, threshold = 10, plot.it = FALSE) {
-  yrNames <- names(massAttacksStack)
-  yrNamesPlus1 <- yrNamesPlus1(yrNames)
+  yrNamesPlus1 <- names(predictedStack)
+  yrNames <- yrNamesMinus1(yrNamesPlus1)
+  # yrNames <- names(massAttacksStack)
+  # yrNamesPlus1 <- yrNamesPlus1(yrNames)
   stk <- raster::stack()
   ROCs <- list()
   if (isTRUE(plot.it)) {
@@ -1186,8 +1210,8 @@ plotCentroidShift <- function(centroids, title) {
     ggtitle(title)
 }
 
-plotHistsOfDEoptimPars <- function(DEout, title) {
-  (paramHists <- DEout %>%
+plotHistsOfDEoptimPars <- function(fit_mpbSpreadOptimizer, title) {
+  (paramHists <- fit_mpbSpreadOptimizer %>%
     ggplot( aes(x=value, fill=Parameter)) +
     geom_histogram() +# color="#e9ecef", alpha=0.6, position = 'identity') +
     facet_grid(. ~ Parameter, scales = "free") +
@@ -1210,18 +1234,18 @@ growPredict <- function(sim) {
          sim$massAttacksStack, mod$growthData, year = time(sim))
 }
 
-colnamesToDEout <- function(DEout, paramNames = c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler")) {
+colnamesToDEout <- function(fit_mpbSpreadOptimizer, paramNames = c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler")) {
 
-  if (length(colnames(DEout$member$pop)) == 0) {
-    message(crayon::green("Please ensure parameter vector in DEout is named: ", paste(collapse = ", ", paramNames)))
-    names(DEout$optim$bestmem) <- paramNames
-    names(DEout$member$lower) <- paramNames
-    names(DEout$member$upper) <- paramNames
-    colnames(DEout$member$bestmemit) <- paramNames
-    colnames(DEout$member$pop) <- paramNames
+  if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
+    message(crayon::green("Please ensure parameter vector in fit_mpbSpreadOptimizer is named: ", paste(collapse = ", ", paramNames)))
+    names(fit_mpbSpreadOptimizer$optim$bestmem) <- paramNames
+    names(fit_mpbSpreadOptimizer$member$lower) <- paramNames
+    names(fit_mpbSpreadOptimizer$member$upper) <- paramNames
+    colnames(fit_mpbSpreadOptimizer$member$bestmemit) <- paramNames
+    colnames(fit_mpbSpreadOptimizer$member$pop) <- paramNames
   }
 
-  DEout
+  fit_mpbSpreadOptimizer
 }
 
 estimateMinAttackThresh <- function(p_minDensityThresh, meanAttackStk, predictedStk, propPineRast) {
