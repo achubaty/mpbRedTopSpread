@@ -567,6 +567,7 @@ Validate <- function(sim) {
       Plots(fn = plot_ObsVPredAbund1, dt = obsPredDT, #types = "screen",
             filename = paste0("Annual Means: Year v Obs and Pred ", startToEnd))
 
+      # browser()
       print(paste("ROC mean value: ", round(mean(stackPredVObs$ROCs$ROC, na.rm = TRUE), 3)))
 
       messageDF(stackPredVObs$ROCs)
