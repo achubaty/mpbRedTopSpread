@@ -149,10 +149,10 @@ knitr::kable(df_outputs)
 
 # Links to other modules
 
-Part of the Mountain Pine Beetle Red Top Growth Model, which evaluates short-run potential for MPB establishment, eruption, and spread.
+Part of the `LandR_MPB` Mountain Pine Beetle Red Top Model, which evaluates short-run potential for MPB establishment, eruption, and spread.
 
-- `mpbMassAttacksData`
 - `mpbClimateData`
+- `mpbMassAttacksData`
 - `mpbPine`
 - `mpbRedTopSpread`
 
