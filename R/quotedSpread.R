@@ -68,12 +68,13 @@ quotedSpreadGeneralGamma <- quote({
 #' @param massAttacksStack A rasterStack object with maps of number of attacked trees per pixel.
 predictQuotedSpread <- function(massAttacksDT,
                                 dispersalKernel = "Weibull3", colNameForPrediction = "ATKTREES",
-                                propPineRas, pineThreshold = 0.3, maxDistance, quotedSpread, p,
+                                propPineRas, thresholdPineProportion = 0.0, maxDistance,
+                                quotedSpread, p,
                                 windDirStack, windSpeedStack, clNumber = NULL, ...) {
   if (!compareRaster(# massAttacksStack,
-                     propPineRas,
-                     windDirStack,
-                     windSpeedStack))
+    propPineRas,
+    windDirStack,
+    windSpeedStack))
     stop("The coarser resolution files need to be all the same resolution")
 
   nams <- intersect(unique(massAttacksDT$layerName), names(windDirStack))
@@ -86,36 +87,36 @@ predictQuotedSpread <- function(massAttacksDT,
 
   # When we are in "predict mode", we don't know the attacks next year ...
   #   so we supply a map of pine
-  whTos <- which(propPineRas[] >= pineThreshold)
+  whTos <- which(propPineRas[] >= thresholdPineProportion)
   atksKnownNextYr <- data.table::data.table(pixels = whTos)
 
-  out22 <- mcMap(nam = nams,
-                 # massAttacksRas = massAttacksList,
-                 windSpeedRas = windSpeedList,
-                 windDirRas = windDirList,
-                 MoreArgs = list(massAttacksDT),
-                 mc.cores = length(nams),
-                 function(nam, massAttacksDT, windDirRas, windSpeedRas) {
-                   layerName1 <- names(windDirRas)
-                   massAttacksDTThisYr <- massAttacksDT[layerName %in% layerName1]
+  prediction <- mcMap(nam = nams,
+                      # massAttacksRas = massAttacksList,
+                      windSpeedRas = windSpeedList,
+                      windDirRas = windDirList,
+                      MoreArgs = list(massAttacksDT),
+                      mc.cores = length(nams),
+                      function(nam, massAttacksDT, windDirRas, windSpeedRas) {
+                        layerName1 <- names(windDirRas)
+                        massAttacksDTThisYr <- massAttacksDT[layerName %in% layerName1]
 
-                   massAttacksRas <- raster(windDirRas)
-                   massAttacksRas[massAttacksDTThisYr$pixel] <- massAttacksDTThisYr$greenTreesYr_t # note green trees
-                   starts <- which(massAttacksRas[] > 0)
+                        massAttacksRas <- raster(windDirRas)
+                        massAttacksRas[massAttacksDTThisYr$pixel] <- massAttacksDTThisYr$greenTreesYr_t # note green trees
+                        starts <- which(massAttacksRas[] > 0)
 
-                   if (length(starts) && length(whTos)) {
-                     message("Predicting ", nam)
-                     out <- as.data.table(eval(quotedSpread, envir = environment()))
-                   } else {
-                     out <- list()
-                   }
-                   return(out)
-                 }
+                        if (length(starts) && length(whTos)) {
+                          message("Predicting ", nam, if (isTRUE(clNumber > 1)) paste0(" with ", clNumber, " cores."))
+                          out <- as.data.table(eval(quotedSpread, envir = environment()))
+                        } else {
+                          out <- list()
+                        }
+                        return(out)
+                      }
   )
-  out22 <- rbindlist(out22, idcol = "layerName")
-  out22[, `:=`(pixel = cellFromXY(propPineRas, cbind(x, y)))]
-  out22[, predYear := yrNamesPlus1(layerName)]
-  setnames(out22, "val", colNameForPrediction)
-  out22
+  prediction <- rbindlist(prediction, idcol = "layerName")
+  prediction[, `:=`(pixel = cellFromXY(propPineRas, cbind(x, y)))]
+  prediction[, predYear := yrNamesPlus1(layerName)]
+  setnames(prediction, "val", colNameForPrediction)
+  prediction
 }
 
