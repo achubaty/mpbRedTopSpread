@@ -21,13 +21,13 @@ defineModule(sim, list(
                   "BioSIM", ##  ## not on CRAN/GitHub; see install info at top of this file
                   "CircStats", "data.table", "DEoptim", "EnvStats",
                   "gamlss", "ggplot2", "gt",
-                  "PredictiveEcology/SpaDES.core@modifyList2 (>= 1.0.8.9011)",
+                  "PredictiveEcology/SpaDES.core@development (>= 1.0.8.9011)",
                   "PredictiveEcology/LandR@cluster (>= 1.0.4.9022)",
                   "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "PredictiveEcology/mpbutils (>= 0.1.3.9000)", "purrr",
                   "quickPlot", "raster", "RColorBrewer",
-                  "PredictiveEcology/reproducible@DotsBugFix (>= 1.2.7.9009)",
+                  "PredictiveEcology/reproducible@development (>= 1.2.7.9009)",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)",
                   "tmap"),
   parameters = rbind(
