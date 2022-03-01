@@ -841,6 +841,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   ipsNum <- c(189, 184, 217, 97, 106, 220, 213)
   ips <- paste0("10.20.0.", ipsNum)
   ips <- rep(ips, c(33, 16, 13, 23, 20, 5, 0))
+  ips <- rep("localhost", 10)
   adjustments = 1#c(0.8, 1, 1, 1, 1, 1, 1)
   numCoresNeeded <- 110 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
 
@@ -849,24 +850,39 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                    reqdPkgs, value = TRUE)
   stPre <- Sys.time()
   if (isTRUE(type %in% c("DEoptim", "fit"))) {
-    browser()
-    cl <- clusterSetup(workers = ips, objsToExport = objsToExport,
+    cl <- LandR::clusterSetup(workers = ips, objsToExport = objsToExport,
                        reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
                        quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
                                                               "sp", "raster", "terra", "lwgeom"),
                                                             repos = "https://cran.rstudio.com")),
                        numCoresNeeded = numCoresNeeded, adjustments = adjustments)
     on.exit(try(stopCluster(cl), silent = TRUE), add = TRUE)
+    # This is customized to work on both Linux and Windows
+    customControls <- list(cluster = cl,
+                           strategy = 2,
+                           itermax = 1,
+                           NP = numCoresNeeded)
+    numericCols <- colnames(massAttacksDT)[sapply(massAttacksDT, is.numeric)]
+    dig <- CacheDigest(list(round(windDirStack[], 5),
+                            round(windSpeedStack[], 5),
+                            round(propPineRas[], 5),
+                            round(massAttacksDT[,..numericCols],5),
+                            round(massAttacksStack[],5), format(objFun),
+                            omitPastPines, dispersalKernel, p_sdDist,
+                            maxDistance, customControls,
+                            lower, upper, objFun, format(quotedSpread)))
     message("Starting DEoptim")
-    fit_mpbSpreadOptimizer <- DEoptim(fn = objFun,
-                                      lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
-                                      upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
-                                      # reps = 1,
-                                      quotedSpread = quotedSpread,
-                                      control = DEoptim.control(cluster = cl,
-                                                                strategy = 2,
-                                                                itermax = 60,
-                                                                NP = numCoresNeeded))
+    fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objFun,
+                                    lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
+                                    upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+                                    # reps = 1,
+                                    .cacheExtra = dig,
+                                    quotedSpread = quotedSpread,
+                                    control = do.call(DEoptim.control, customControls),
+                                    useCloud = TRUE, userTags = c("MPB fit_mpbSpreadOptimizer"),
+                                    omitArgs = c("control", "fn", "lower", "upper", "quotedSpread"),
+                                    cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
+    )
 
     fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, names(p))
     saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
