@@ -849,6 +849,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                            "purrr", "mpbutils", "gamlss")),
                    reqdPkgs, value = TRUE)
   stPre <- Sys.time()
+  stFileName <- gsub(":", "-", format(stPre))
   if (isTRUE(type %in% c("DEoptim", "fit"))) {
     cl <- LandR::clusterSetup(workers = ips, objsToExport = objsToExport,
                        reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
@@ -885,10 +886,10 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     )
 
     fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, names(p))
-    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("DEout_", format(stPre), ".rds")))
+    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("DEout_", stFileName, ".rds")))
     sim2 <- get("sim", whereInStack("sim"))
     parms <- params(sim2)
-    saveRDS(parms, file = file.path("outputs", paste0("parms_", format(stPre), ".rds")))
+    saveRDS(parms, file = file.path("outputs", paste0("parms_", stFileName, ".rds")))
     try(parallel::stopCluster(cl), silent = TRUE)
 
   } else if (isTRUE(type == "runOnce")) {
@@ -922,7 +923,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                                            control = list(trace = 3, factr = 1e6),
                                                            parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE)
     )
-    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("optimOut_", format(stPre), ".rds")))
+    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("optimOut_", stFileName, ".rds")))
   }
   try(parallel::stopCluster(cl))
   stPost <- Sys.time()
