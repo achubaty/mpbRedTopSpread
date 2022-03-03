@@ -27,7 +27,7 @@ defineModule(sim, list(
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "PredictiveEcology/mpbutils (>= 0.1.3.9000)", "purrr",
                   "quickPlot", "raster", "RColorBrewer",
-                  "PredictiveEcology/reproducible@development (>= 1.2.7.9009)",
+                  "PredictiveEcology/reproducible@robustDigest (>= 1.2.7.9041)",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)",
                   "tmap"),
   parameters = rbind(
@@ -851,6 +851,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   stPre <- Sys.time()
   stFileName <- gsub(":", "-", format(stPre))
   if (isTRUE(type %in% c("DEoptim", "fit"))) {
+    # Don't know how to skip this step if using a CloudCached copy below -- this is unnecessary in those cases
     cl <- LandR::clusterSetup(workers = ips, objsToExport = objsToExport,
                        reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
                        quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
@@ -861,27 +862,16 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     # This is customized to work on both Linux and Windows
     customControls <- list(cluster = cl,
                            strategy = 2,
-                           itermax = 1,
+                           itermax = 60,
                            NP = numCoresNeeded)
-    numericCols <- colnames(massAttacksDT)[sapply(massAttacksDT, is.numeric)]
-    dig <- CacheDigest(list(round(windDirStack[], 5),
-                            round(windSpeedStack[], 5),
-                            round(propPineRas[], 5),
-                            round(massAttacksDT[,..numericCols],5),
-                            round(massAttacksStack[],5), format(objFun),
-                            omitPastPines, dispersalKernel, p_sdDist,
-                            maxDistance, customControls,
-                            lower, upper, objFun, format(quotedSpread)))
     message("Starting DEoptim")
     fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objFun,
                                     lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
                                     upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
                                     # reps = 1,
-                                    .cacheExtra = dig,
                                     quotedSpread = quotedSpread,
                                     control = do.call(DEoptim.control, customControls),
                                     useCloud = TRUE, userTags = c("MPB fit_mpbSpreadOptimizer"),
-                                    omitArgs = c("control", "fn", "lower", "upper", "quotedSpread"),
                                     cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
     )
 
