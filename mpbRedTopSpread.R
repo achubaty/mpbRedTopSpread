@@ -27,7 +27,7 @@ defineModule(sim, list(
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
                   "PredictiveEcology/mpbutils (>= 0.1.3.9000)", "purrr",
                   "quickPlot", "raster", "RColorBrewer",
-                  "PredictiveEcology/reproducible@robustDigest (>= 1.2.7.9041)",
+                  "PredictiveEcology/reproducible@robustDigest (>= 1.2.8.9041)",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)",
                   "tmap"),
   parameters = rbind(
