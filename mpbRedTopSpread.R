@@ -159,6 +159,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                                      sim$massAttacksStack, mod$growthData)
          },
          "growPredict" = {
+           browser()
            if (is.null(sim$fit_mpbSpreadOptimizer)) {
              message("A fit_mpbSpreadOptimizer object should probably be supplied")
              optimOutFileList <- dir("outputs", pattern = "optimOut", full.names = TRUE)
@@ -468,6 +469,7 @@ Validate <- function(sim) {
     }
 
     if (length(fit_mpbSpreadOptimizer$optim$bestmem) %in% 3:4 || iii > 20) {
+      browser()
       if (all(grepl("par[[:digit:]]", names(fit_mpbSpreadOptimizer$optim$bestmem))))
         if (length(fit_mpbSpreadOptimizer$optim$bestmem) == 3) {
           fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist"))
@@ -821,6 +823,8 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   p_sdDist <- p["p_sdDist"] # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
   p_advectionMag <- p["p_advectionMag"]
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
+  names(lower) <- names(p)
+  names(upper) <- names(p)
 
   libPaths <- .libPaths()
 
@@ -850,28 +854,45 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                    reqdPkgs, value = TRUE)
   stPre <- Sys.time()
   stFileName <- gsub(":", "-", format(stPre))
-  if (isTRUE(type %in% c("DEoptim", "fit"))) {
-    # Don't know how to skip this step if using a CloudCached copy below -- this is unnecessary in those cases
+  customControls <- list(strategy = 2,
+                         itermax = 60,
+                         NP = numCoresNeeded)
+
+
+  # This series of functions including the first "if" block below is to try to determine if
+  #   the DEoptim needs rerunning. If it doesn't, then don't bother setting up cluster.
+  cacheID <- "34814d19554e3e4b" # This is manual override the DEoptim cache. Set to NULL if need to rerun.
+  objsForDEoptim <- list(DEoptim, fn = objFun,
+                         lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
+                         upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+                         # reps = 1,
+                         quotedSpread = quotedSpread,
+                         control = do.call(DEoptim.control, customControls))
+  dig <- Cache(CacheDigest, objsForDEoptim) # See if this has already been cached before
+  if (!(isFALSE(attr(dig, ".Cache")$newCache && is.null(cacheID))) &&
+    isTRUE(type %in% c("DEoptim", "fit")) ) {
     cl <- LandR::clusterSetup(workers = ips, objsToExport = objsToExport,
-                       reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
-                       quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
-                                                              "sp", "raster", "terra", "lwgeom"),
-                                                            repos = "https://cran.rstudio.com")),
-                       numCoresNeeded = numCoresNeeded, adjustments = adjustments)
+                              reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
+                              quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
+                                                                     "sp", "raster", "terra", "lwgeom"),
+                                                                   repos = "https://cran.rstudio.com")),
+                              numCoresNeeded = numCoresNeeded, adjustments = adjustments)
     on.exit(try(stopCluster(cl), silent = TRUE), add = TRUE)
-    # This is customized to work on both Linux and Windows
-    customControls <- list(cluster = cl,
-                           strategy = 2,
-                           itermax = 60,
-                           NP = numCoresNeeded)
+    customControls$cl <- cl
+
     message("Starting DEoptim")
-    fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objFun,
-                                    lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
-                                    upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+  }
+
+  if (isTRUE(type %in% c("DEoptim", "fit"))) {
+    # This is customized to work on both Linux and Windows
+    fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objsForDEoptim$fn,
+                                    lower = objsForDEoptim$lower,#c(500, 1, -90, 0.9, 1.1, 5),
+                                    upper = objsForDEoptim$upper,#c(30000, 10, 240, 1.8, 1.6, 30),
                                     # reps = 1,
-                                    quotedSpread = quotedSpread,
-                                    control = do.call(DEoptim.control, customControls),
+                                    quotedSpread = objsForDEoptim$quotedSpread,
+                                    control = objsForDEoptim$control,
                                     useCloud = TRUE, userTags = c("MPB fit_mpbSpreadOptimizer"),
+                                    cacheId = cacheID,
                                     cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
     )
 
@@ -915,7 +936,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     )
     saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("optimOut_", stFileName, ".rds")))
   }
-  try(parallel::stopCluster(cl))
+  try(parallel::stopCluster(cl), silent = TRUE)
   stPost <- Sys.time()
   print(difftime(stPost, stPre))
 
@@ -1229,7 +1250,7 @@ growPredict <- function(sim) {
 colnamesToDEout <- function(fit_mpbSpreadOptimizer, paramNames = c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler")) {
 
   if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
-    message(crayon::green("Please ensure parameter vector in fit_mpbSpreadOptimizer is named: ", paste(collapse = ", ", paramNames)))
+    # message(crayon::green("Please ensure parameter vector in fit_mpbSpreadOptimizer is named: ", paste(collapse = ", ", paramNames)))
     names(fit_mpbSpreadOptimizer$optim$bestmem) <- paramNames
     names(fit_mpbSpreadOptimizer$member$lower) <- paramNames
     names(fit_mpbSpreadOptimizer$member$upper) <- paramNames
