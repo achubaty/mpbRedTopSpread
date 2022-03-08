@@ -341,8 +341,8 @@ Init <- function(sim) {
   resRatio <- res(rasCoarse)[1]/res(sim$climateSuitabilityMaps)[1]
   if (resRatio < 1) {
     climateSuitabilityMaps <- Cache(disaggregate, sim$climateSuitabilityMaps, fact = 10)
-    climateSuitabilityMaps <- raster::stack(crop(climateSuitabilityMaps, sim$massAttacksStack))
-    sim$climateSuitabilityMaps <- climateSuitabilityMaps
+    climateSuitabilityMaps <- terra:::project(terra::rast(climateSuitabilityMaps), terra::rast(sim$massAttacksStack))
+    sim$climateSuitabilityMaps <- raster::stack(climateSuitabilityMaps)
   }
   if (!compareRaster(sim$massAttacksStack,
                      sim$propPineRas,
