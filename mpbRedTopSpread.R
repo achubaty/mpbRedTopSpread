@@ -29,7 +29,7 @@ defineModule(sim, list(
                   "quickPlot", "raster", "RColorBrewer",
                   "PredictiveEcology/reproducible@robustDigest (>= 1.2.8.9041)",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)",
-                  "tmap"),
+                  "terra", "tmap"),
   parameters = rbind(
     defineParameter("cachePredict", "logical", TRUE, NA, NA,
                     "The function predictQuotedSpread can be Cached or not; default is TRUE"),
@@ -469,7 +469,6 @@ Validate <- function(sim) {
     }
 
     if (length(fit_mpbSpreadOptimizer$optim$bestmem) %in% 3:4 || iii > 20) {
-      browser()
       if (all(grepl("par[[:digit:]]", names(fit_mpbSpreadOptimizer$optim$bestmem))))
         if (length(fit_mpbSpreadOptimizer$optim$bestmem) == 3) {
           fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist"))
@@ -883,7 +882,8 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     message("Starting DEoptim")
   }
 
-  if (isTRUE(type %in% c("DEoptim", "fit"))) {
+  browser()
+  if (any(type %in% c("DEoptim", "fit"))) {
     # This is customized to work on both Linux and Windows
     fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objsForDEoptim$fn,
                                     lower = objsForDEoptim$lower,#c(500, 1, -90, 0.9, 1.1, 5),
@@ -903,7 +903,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     saveRDS(parms, file = file.path("outputs", paste0("parms_", stFileName, ".rds")))
     try(parallel::stopCluster(cl), silent = TRUE)
 
-  } else if (isTRUE(type == "runOnce")) {
+  } else if (any(type == "runOnce")) {
     DEoutFileList <- dir("outputs", pattern = "DEout", full.names = TRUE)
     fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
     if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
@@ -919,7 +919,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                   massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT)
     fit_mpbSpreadOptimizer <- NULL
     browser()
-  } else if (isTRUE(type == "optim")) {
+  } else if (any(type == "optim")) {
     # stop("This has not been maintained and appears to be not capable of estimating parameters")
     numCoresNeeded <- 5
     cl <- clusterSetup(rep("localhost", numCoresNeeded), objsToExport = objsToExport,
