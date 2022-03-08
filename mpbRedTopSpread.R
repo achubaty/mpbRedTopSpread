@@ -882,7 +882,6 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     message("Starting DEoptim")
   }
 
-  browser()
   if (any(type %in% c("DEoptim", "fit"))) {
     # This is customized to work on both Linux and Windows
     fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objsForDEoptim$fn,
