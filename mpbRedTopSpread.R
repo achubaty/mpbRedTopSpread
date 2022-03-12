@@ -65,6 +65,9 @@ defineModule(sim, list(
     defineParameter("p_sdDist", "numeric", 1.2, NA, NA,
                     paste0("The dispersion term for the Weibull dispersal kernel: contributes to shape and scale parameters;",
                            "sqrt(variance(of the Weibull distribution)) ")),
+    defineParameter("stemsPerHaAvg", "integer", 1125, NA, NA,
+                    desc = "The average number of pine stems per ha in the study area. ",
+                    "Taken from Whitehead & Russo (2005), Cooke & Carroll (2017)"),
     defineParameter("type", "character", "DEoptim", NA, NA,
                     "One of several modes of running this module: DEoptim, optim, runOnce, validate, predict or nofit"),
     defineParameter(".plots", "character", "screen", NA, NA,
@@ -145,6 +148,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
              sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "validate", 4.5)
            }
            if (isTRUE(any(c("predict", "all") %in% P(sim)$type))) { # will automatically validate
+             sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalFit", eventPriority = 3.5) # need to run fit or get Cached object
              sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
              sim <- scheduleEvent(sim, end(sim), "mpbRedTopSpread", "validate", 7)
            } else if (isTRUE(any(c("validateAll") %in% P(sim)$type))) {
@@ -159,22 +163,42 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                                      sim$massAttacksStack, mod$growthData)
          },
          "growPredict" = {
-           browser()
            if (is.null(sim$fit_mpbSpreadOptimizer)) {
+             browser() # This should no longer be necessary -- it will run the DEoptim and pull from Cache
              message("A fit_mpbSpreadOptimizer object should probably be supplied")
-             optimOutFileList <- dir("outputs", pattern = "optimOut", full.names = TRUE)
+             optimOutFileList <- dir(outputPath(sim), pattern = "optimOut", full.names = TRUE)
              sim$fit_mpbSpreadOptimizer <- readRDS(optimOutFileList[[3]])
-             DEoutFileList <- dir("outputs", pattern = "fit_mpbSpreadOptimizer", full.names = TRUE)
+             DEoutFileList <- dir(outputPath(sim), pattern = "fit_mpbSpreadOptimizer", full.names = TRUE)
              sim$fit_mpbSpreadOptimizer <- readRDS(DEoutFileList[[23]])
              sim$fit_mpbSpreadOptimizer <- colnamesToDEout(sim$fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist"))
            }
+
+           if (!is.null(sim$cohortData)) {
+             message("Using sim$cohortData to change/update the sim$propPineRas, because sim$cohortData is present")
+             propPineRas <- propPineFromCD(sim$cohortData, sim$sppEquiv, sim$pixelGroupMap)
+             propPineRas = terra::project(terra::rast(propPineRas), terra::rast(sim$massAttacksStack), method = "bilinear" )
+             sim$propPineRas <- raster::raster(propPineRas)
+           }
+
            sim$massAttacksDT_1Yr <- growPredict(sim)
+           message("Estimated ",
+                   format(scientific = TRUE, round(sum(sim$massAttacksDT_1Yr$greenTreesYr_t, na.rm = TRUE), 0)),
+                   " source trees ", "in year ", time(sim) + 1)
+
+           if (anyPlotting(Par$.plots)) {
+             title <- paste0("Predicted Attack vs. Current Attack, prior to dispersal, year ", time(sim))
+             Plots(fn = plot_atkYearByYearPlus1, maDT = sim$massAttacksDT_1Yr, title = title, type = "screen", usePlot = FALSE,
+                   filename = file.path(outputPath(sim), "figures", paste0(title)))
+           }
 
            ## growth needs to happen after spread:
            sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalPredict", eventPriority = 5.5)
          },
          "dispersalPredict" = {
            sim$predictedDT <- dispersalPredict(sim) # this object accumulates years over time
+           message("Estimated ",
+                   format(scientific = TRUE, round(sum(sim$predictedDT$ATKTREES, na.rm = TRUE), 0)),
+                   " trees attacked after dispersal ", "in year ", time(sim) + 1)
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
          },
          "dispersalFit" = {
@@ -190,8 +214,10 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                                                       # bgSettlingProp = P(sim)$bgSettlingProp,
                                                       dispersalKernel = P(sim)$dispersalKernel,
                                                       type = P(sim)$type,
+                                                      outputPath = outputPath(sim),
                                                       # currentTime = time(sim),
-                                                      reqdPkgs = reqdPkgs(module = currentModule(sim), modulePath = modulePath(sim))[[currentModule(sim)]]
+                                                      reqdPkgs = reqdPkgs(module = currentModule(sim),
+                                                                          modulePath = modulePath(sim))[[currentModule(sim)]]
            )
 
            # sim <- dispersal(sim)
@@ -257,6 +283,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
     ## make coarser
     aggRTM <- raster::raster(sim$rasterToMatch)
     aggRTM <- raster::aggregate(aggRTM, fact = aggFact)
+    browser()
     aggRTM <- LandR::aggregateRasByDT(sim$rasterToMatch, aggRTM, fn = mean)
 
     dem <- Cache(prepInputsCanDEM,
@@ -309,7 +336,7 @@ Init <- function(sim) {
     sim$pineMap[] <- sim$pineMap[]
 
   ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
-  MAXTREES <- 1125 * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
+  MAXTREES <- P(sim)$stemsPerHaAvg * prod(res(sim$pineMap)) / 100^2 ## TODO: round this?
 
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together
@@ -324,24 +351,26 @@ Init <- function(sim) {
   propPineRas[nas] <- 0
 
   nams <- names(sim$massAttacksStack)
-  rasTmplate <- raster(sim$massAttacksStack)
-  rasCoarse <- raster(raster::aggregate(rasTmplate, fact = 4))
-  massAttacksList <- raster::unstack(sim$massAttacksStack)
-  opts <- options(reproducible.cacheSpeed = "fast")
-  on.exit(options(opts))
-  mams <- raster::stack(
-    Cache(lapply, massAttacksList, function(mam)
-      aggregateRasByDT(mam, rasCoarse, fn = sum))
-  )
-  names(mams) <- names(sim$massAttacksStack)
-  sim$massAttacksStack <- mams
-  sim$propPineRas <- Cache(aggregateRasByDT, propPineRas, rasCoarse, fn = mean)
-  sim$windDirStack <- Cache(aggregate, sim$windDirStack, res(rasCoarse)[1]/res(sim$windDirStack)[1])
-  sim$windSpeedStack <- Cache(aggregate, sim$windSpeedStack, res(rasCoarse)[1]/res(sim$windSpeedStack)[1])
+  rasCoarse <- coarseRaster(sim$massAttacksStack)
+
+
+  # massAttacksList <- raster::unstack(sim$massAttacksStack)
+  #opts <- options(reproducible.cacheSpeed = "fast")
+  #on.exit(options(opts))
+  #mams <- raster::stack(
+  #  Cache(lapply, massAttacksList, function(mam)
+  #    aggregateRasByDT(mam, rasCoarse, fn = sum))
+  #)
+  #names(mams) <- names(sim$massAttacksStack)
+  #sim$massAttacksStack <- mams
+  sim$massAttacksStack <- Cache(aggregate, sim$massAttacksStack, res(rasCoarse)[1]/res(sim$massAttacksStack)[1], fun = "sum")
+  sim$propPineRas <- Cache(aggregate, propPineRas, res(rasCoarse)[1]/res(propPineRas)[1], fun = "mean")
+  sim$windDirStack <- Cache(aggregate, sim$windDirStack, res(rasCoarse)[1]/res(sim$windDirStack)[1], fun = "mean")
+  sim$windSpeedStack <- Cache(aggregate, sim$windSpeedStack, res(rasCoarse)[1]/res(sim$windSpeedStack)[1], fun = "mean")
   resRatio <- res(rasCoarse)[1]/res(sim$climateSuitabilityMaps)[1]
   if (resRatio < 1) {
-    climateSuitabilityMaps <- Cache(disaggregate, sim$climateSuitabilityMaps, fact = 10)
-    climateSuitabilityMaps <- terra:::project(terra::rast(climateSuitabilityMaps), terra::rast(sim$massAttacksStack))
+    # climateSuitabilityMaps <- Cache(disaggregate, sim$climateSuitabilityMaps, fact = 10)
+    climateSuitabilityMaps <- terra:::project(terra::rast(sim$climateSuitabilityMaps), terra::rast(sim$massAttacksStack))
     sim$climateSuitabilityMaps <- raster::stack(climateSuitabilityMaps)
   }
   if (!compareRaster(sim$massAttacksStack,
@@ -351,7 +380,7 @@ Init <- function(sim) {
                      sim$climateSuitabilityMaps))
     stop("The coarser resolution files need to be all the same resolution")
 
-  options(opts)
+  # options(opts)
   ## create a data.table consisting of the reduced map of current MPB distribution,
   ## proportion pine, and climatic suitability;
   ## use only the start year's non-zero and non-NA data
@@ -416,7 +445,7 @@ dispersalPredict <- function(sim) {
   if (is.null(sim$thresholdAttackTreesMinDetectable))
     sim$thresholdAttackTreesMinDetectable <- 1.4
 
-  predictedDT <- Cache(predictQuotedSpread,
+  predictedDT <- predictQuotedSpread(
                        showSimilar = FALSE, # a bug in the database -- remove this
                        massAttacksDT = sim$massAttacksDT_1Yr,
                        windDirStack = sim$windDirStack,
@@ -425,13 +454,13 @@ dispersalPredict <- function(sim) {
                        thresholdPineProportion = P(sim)$thresholdPineProportion,
                        dispersalKernel = P(sim)$dispersalKernel,
                        clNumber = Par$coresForPrediction,
-                       useCache = P(sim)$cachePredict,
+                       #useCache = P(sim)$cachePredict,
                        maxDistance = P(sim)$maxDistance,
                        quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
-                       .cacheExtra = format(P(sim)$quotedSpread), # cache this instead
+                       #.cacheExtra = format(P(sim)$quotedSpread), # cache this instead
                        p = pBest,
-                       colNameForPrediction = P(sim)$colNameForPrediction,
-                       omitArgs = "quotedSpread"
+                       colNameForPrediction = P(sim)$colNameForPrediction#,
+                       #omitArgs = "quotedSpread"
   )
 
   predictedDT[, CLIMATE := sim$climateSuitabilityMaps[[unique(layerName)]][pixel]]
@@ -443,7 +472,7 @@ Validate <- function(sim) {
   startToEnd <- paste0(start(sim), " to ", end(sim), "_", Sys.time())
 
   if (is.null(sim$DEout)) {
-    DEoutFileList <- dir("outputs", pattern = "DEout", full.names = TRUE)
+    DEoutFileList <- dir(outputPath(sim), pattern = "DEout", full.names = TRUE)
     fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
   }
 
@@ -774,7 +803,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                          rasterToMatch, maxDistance, # massAttacksRas,
                          params, #currentTime, bgSettlingProp,
                          type, reqdPkgs,
-                         windDirStack, windSpeedStack, dispersalKernel) {
+                         windDirStack, windSpeedStack, outputPath, dispersalKernel) {
 
   # Make sure propPineRas is indeed a proportion
   mv <- maxValue(propPineRas)
@@ -882,7 +911,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     message("Starting DEoptim")
   }
 
-  if (any(type %in% c("DEoptim", "fit"))) {
+  if (any(type %in% c("DEoptim", "fit", "predict"))) {
     # This is customized to work on both Linux and Windows
     fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objsForDEoptim$fn,
                                     lower = objsForDEoptim$lower,#c(500, 1, -90, 0.9, 1.1, 5),
@@ -896,14 +925,14 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     )
 
     fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, names(p))
-    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("DEout_", stFileName, ".rds")))
+    saveRDS(fit_mpbSpreadOptimizer, file = file.path(outputPath, paste0("DEout_", stFileName, ".rds")))
     sim2 <- get("sim", whereInStack("sim"))
     parms <- params(sim2)
-    saveRDS(parms, file = file.path("outputs", paste0("parms_", stFileName, ".rds")))
+    saveRDS(parms, file = file.path(outputPath, paste0("parms_", stFileName, ".rds")))
     try(parallel::stopCluster(cl), silent = TRUE)
 
   } else if (any(type == "runOnce")) {
-    DEoutFileList <- dir("outputs", pattern = "DEout", full.names = TRUE)
+    DEoutFileList <- dir(outputPath, pattern = "DEout", full.names = TRUE)
     fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
     if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
       message("Please add names to parameter vector in fit_mpbSpreadOptimizer")
@@ -933,7 +962,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                                            control = list(trace = 3, factr = 1e6),
                                                            parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE)
     )
-    saveRDS(fit_mpbSpreadOptimizer, file = file.path("outputs", paste0("optimOut_", stFileName, ".rds")))
+    saveRDS(fit_mpbSpreadOptimizer, file = file.path(outputPath, paste0("optimOut_", stFileName, ".rds")))
   }
   try(parallel::stopCluster(cl), silent = TRUE)
   stPost <- Sys.time()
@@ -1242,6 +1271,8 @@ growPredict <- function(sim) {
     massAttacksDTforPredict <- massAttacksDTforPredict[get(Par$colNameForPrediction) > sim$thresholdAttackTreesMinDetectable]
 
   massAttacksDTforPredict <- massAttacksDTforPredict[grep(time(sim), layerName)] # remove all future data
+  if (NROW(massAttacksDTforPredict) == 0)
+    stop("The number of attacked trees has fallen below sim$thresholdAttackTreesMinDetectable; the outbreak is over!")
   grow(massAttacksDTforPredict, P(sim)$dataset,
        sim$massAttacksStack, mod$growthData, year = time(sim))
 }
@@ -1276,3 +1307,27 @@ makeAnnualMeansDT <- function(pred, obs) {
   dt
 }
 
+propPineFromCD <- function(cd, sppEquiv, pgm) {
+  pinesInCohortData <- equivalentName(c("Pinu_con" , "Pinu_ban"), sppEquiv,
+                                      equivalentNameColumn(levels(cd$speciesCode), sppEquiv))
+  propPineDT <- cd[, list(propPine = sum(B[speciesCode %in% ..pinesInCohortData])/sum(B) ), by = "pixelGroup"]
+  propPineRas <- rasterizeReduced(propPineDT, pgm, "propPine")
+  propPineRas[is.na(propPineRas[])] <- 0
+  propPineRas
+}
+
+coarseRaster <- function(src, fact = 4) {
+  rasTmplate <- raster(src)
+  raster(raster::aggregate(rasTmplate, fact = fact))
+}
+
+plot_atkYearByYearPlus1 <- function(maDT, title) {
+  ggplot(maDT, aes(ATKTREES, greenTreesYr_t)) +
+    geom_point() +
+    coord_trans(x="log2", y="log2") +
+    scale_x_continuous(breaks = 10^(0:ceiling(max(log10(maDT$ATKTREES), na.rm = TRUE)))) +
+    scale_y_continuous(breaks = 10^(0:ceiling(max(log10(maDT$greenTreesYr_t), na.rm = TRUE))))  +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    ggtitle(title) +
+    theme_bw()
+}
