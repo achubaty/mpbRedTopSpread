@@ -33,9 +33,6 @@ defineModule(sim, list(
   parameters = rbind(
     defineParameter("cachePredict", "logical", TRUE, NA, NA,
                     "The function predictQuotedSpread can be Cached or not; default is TRUE"),
-    defineParameter("cohortDefinitionCols", "character", c("pixelGroup", "speciesCode", "age"), NA, NA,
-                    desc = paste("`cohortData` columns that determine what constitutes a cohort",
-                                 "This parameter should only be modified if additional modules are adding columns to cohortData")),
     defineParameter("colNameForPrediction", "character", "ATKTREES", NA, NA,
                     "The column name in massAttacksDT that contains the values to predict from"),
     defineParameter("coresForPrediction", "integer", 10, NA, NA,
@@ -52,6 +49,8 @@ defineModule(sim, list(
     defineParameter("thresholdPineProportion", "numeric", 0.0, 0, 1,
                     "The threshold of proportion cover of pine in the pine layer that is available to be attacked during
                     predict mode"),
+    defineParameter("minAgeForMPB", "numeric", 40, NA, NA,
+                    "The minimum age of tree that a MPB will attack a tree during epidemic"),
     defineParameter("maxDistance", "numeric", 1.4e5, NA, NA,
                     "The maximum distance to allow for pair-wise from-to dispersal pairs"),
     defineParameter("quotedSpread", c("language"), NULL, NA, NA,
@@ -94,6 +93,9 @@ defineModule(sim, list(
   inputObjects = bindrows(
     expectsInput(objectName = "absk", objectClass = "SpatialPolygonsDataFrame",
                  desc = "Alberta and Saskatchewan political outlines"),
+    expectsInput("columnsForPixelGroups", "character",
+                 "The names of the columns in cohortData that define unique pixelGroups.
+                 Default is c('ecoregionGroup', 'speciesCode', 'age', 'B') "),
     expectsInput("climateSuitabilityMaps", "RasterStack",
                  "A time series of climatic suitablity RasterLayers, each with previx 'X' and the year, e.g., 'X2010'"),
     expectsInput("massAttacksStack", "RasterStack",
@@ -117,6 +119,11 @@ defineModule(sim, list(
                  sourceURL = NA)
   ),
   outputObjects = bindrows(
+    createsOutput("cohortPixelDataMPBLost", "data.table",
+                    paste("A `cohortPixelData`-like object, but with extra columns: ",
+                          "numStems (the estimated number of stems of Pine), ",
+                          "BafterMPBKills (the new value for the B for the cohort after MPB attacks are removed), ",
+                          "Bloss (the estimated B lost in that cohort after MPB attacks are removed)")),
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
     createsOutput("massAttacksStack", "RasterStack",
                   "This will be the same data as the inputted object, but will have a different resolution."),
@@ -211,42 +218,49 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim$predictedDT <- sim$predictedDT[sim$predictedDT$ATKTREES > 0]
            pineAttackedRas[sim$predictedDT$pixel] <- sim$predictedDT$ATKTREES
            pineAttackedRasLg <- raster::raster(terra::project(terra::rast(pineAttackedRas), terra::rast(sim$pixelGroupMap)))
-           dt <- data.table(pineAtk = pineAttackedRasLg[], pixelIndex = seq(ncell(pineAttackedRasLg)))
+           dt <- data.table(numStemsKilled = pineAttackedRasLg[], pixelIndex = seq(ncell(pineAttackedRasLg)))
            dt <- na.omit(dt)
            pinesInCohortData <- equivalentName(P(sim)$pineSpToUse, sim$sppEquiv,
                                                equivalentNameColumn(levels(sim$cohortData$speciesCode), sim$sppEquiv))
 
            dt1 <- dt[pcd, on = "pixelIndex", nomatch = 0] # assigns to all cohorts in a pixelIndex
+           set(dt1, NULL, "pixelGroup", NULL) # they are no longer valid
+           # Until here, the numStemsKilled is theoretical -- it is the number of attacked trees, if there are trees to attack
+           #    After this, it is converted to real
            dt1[, propB := B/sum(B), by = "pixelIndex"]
-           dt1[, numStems := asInteger(propB * Par$stemsPerHaAvg)]
-           dt1[speciesCode %in% pinesInCohortData, Bnew := asInteger((1 - pineAtk / numStems) * B)]
-           dt1[speciesCode %in% pinesInCohortData, Bloss := B - Bnew]
-           dt1[speciesCode %in% pinesInCohortData, B := Bnew]
-           set(dt1, NULL, c("Bnew", "propB", "numStems"), NULL)
+           dt1[, numStems := pmax(1, asInteger(propB * Par$stemsPerHaAvg))] # if B is very low, asInteger can round down to 0 stems --> causes failures below
+           set(dt1, NULL, "propB", NULL) # this was just to calculate how many stems of pine there are; not needed further
+           set(dt1, which(dt1$age < Par$minAgeForMPB), "numStemsKilled", 0)
+           onlyAttackablePines <- which(dt1$speciesCode %in% pinesInCohortData & dt1$age >= Par$minAgeForMPB)
+           dt1[onlyAttackablePines, BafterMPBKills := asInteger((1 - numStemsKilled / numStems) * B)]
+           dt1[onlyAttackablePines, Bloss := B - BafterMPBKills]
+           sim$cohortPixelDataMPBLost <- dt1[onlyAttackablePines]
+           message("Estimated ",
+                   format(scientific = TRUE, round(sum(sim$cohortPixelDataMPBLost$Bloss, na.rm = TRUE), 0)),
+                   " Biomass lost after dispersal ", "in year ", time(sim) + 1)
+           dt1[onlyAttackablePines, B := BafterMPBKills]
+           set(dt1, NULL, c("BafterMPBKills", "numStems", "Bloss"), NULL)
 
            # Next step need to rebuild the cohortData, but with new B
            # This is an update join! WTF! https://stackoverflow.com/questions/44433451/r-data-table-update-join
-           pcd[dt1[speciesCode %in% pinesInCohortData, c("pixelIndex", "speciesCode", "B", "Bloss")],
-               on = c("speciesCode", "pixelIndex"), c("B", "Bloss"):= .(i.B, Bloss)]
+           pcd[dt1[speciesCode %in% pinesInCohortData, c("pixelIndex", "speciesCode", "B")],
+               on = c("speciesCode", "pixelIndex"), c("B"):= .(i.B)]
 
-           message("Estimated ",
-                   format(scientific = TRUE, round(sum(pcd$Bloss, na.rm = TRUE), 0)),
-                   " Biomass lost after dispersal ", "in year ", time(sim) + 1)
            whChanged <- pcd$pixelIndex %in% dt1$pixelIndex
            pcdChanged <- pcd[whChanged]
            pcdUnchanged <- pcd[!whChanged]
-           if (!("B" %in% P(sim)$cohortDefinitionCols)) {
-             co <- capture.output(dput(union(P(sim)$cohortDefinitionCols, "B")))
-             stop("P(sim)$cohortDefinitionCols must use Biomass (B column) because of partial mortality; ",
-                  "Please set this parameter globally e.g., \n",
-                  ".globals = list(cohortDefinitionCols = ", co, ")")
+           if (!("B" %in% sim$columnsForPixelGroups)) {
+             co <- capture.output(dput(union(sim$columnsForPixelGroups, "B")))
+             stop("sim$columnsForPixelGroups must use Biomass (B column) because of partial mortality; ",
+                  "Please set this object e.g., \n",
+                  "sim$columnsForPixelGroups = ", co)
            }
-           pgs <- LandR::generatePixelGroups(pcdChanged, P(sim)$cohortDefinitionCols,
+           pgs <- LandR::generatePixelGroups(pcdChanged, sim$columnsForPixelGroups,
                                              maxPixelGroup = max(pcdUnchanged$pixelGroup))
            set(pcdChanged, NULL, c("uniqueComboByRow", "uniqueComboByPixelIndex"), NULL)
            pcdNew <- rbindlist(list(pcdUnchanged, pcdChanged))
            pgm <- makePixelGroupMap(pcdNew, rasterToMatch = sim$rasterToMatch)
-           sim$cohortData <- unique(pcd[, -"pixelIndex"], by = P(sim)$cohortDefinitionCols) # need B because partial Pine mortality
+           sim$cohortData <- unique(pcd[, -"pixelIndex"], by = sim$columnsForPixelGroups) # need B because partial Pine mortality
 
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
          },
@@ -369,6 +383,9 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
   if (is.null(P(sim)$quotedSpread))
     P(sim, "quotedSpread") <- quotedSpreadWeibull3
 
+  if (!suppliedElsewhere("columnsForPixelGroups", sim)) {
+    sim$columnsForPixelGroups <- LandR::columnsForPixelGroups
+  }
 
   return(invisible(sim))
 }
@@ -1384,5 +1401,5 @@ plot_atkYearByYearPlus1 <- function(maDT, title) {
 cohortData2PixelCohortData <- function(cd, pgm) {
   dt <- data.table(pixelGroup = pgm[], pixelIndex = seq(ncell(pgm)))
   dt <- na.omit(dt)
-  dt <- dt[cd, on = "pixelGroup"]
+  return(dt)
 }
