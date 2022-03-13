@@ -33,6 +33,9 @@ defineModule(sim, list(
   parameters = rbind(
     defineParameter("cachePredict", "logical", TRUE, NA, NA,
                     "The function predictQuotedSpread can be Cached or not; default is TRUE"),
+    defineParameter("cohortDefinitionCols", "character", c("pixelGroup", "speciesCode", "age"), NA, NA,
+                    desc = paste("`cohortData` columns that determine what constitutes a cohort",
+                                 "This parameter should only be modified if additional modules are adding columns to cohortData")),
     defineParameter("colNameForPrediction", "character", "ATKTREES", NA, NA,
                     "The column name in massAttacksDT that contains the values to predict from"),
     defineParameter("coresForPrediction", "integer", 10, NA, NA,
@@ -65,6 +68,9 @@ defineModule(sim, list(
     defineParameter("p_sdDist", "numeric", 1.2, NA, NA,
                     paste0("The dispersion term for the Weibull dispersal kernel: contributes to shape and scale parameters;",
                            "sqrt(variance(of the Weibull distribution)) ")),
+    defineParameter("pineSpToUse", "character", c("Pinu_con" , "Pinu_ban"), NA, NA,
+                    desc = "The 1 or 2 or 3 species to use as possible host for MPB. There are currently",
+                    " no differentiation by species"),
     defineParameter("stemsPerHaAvg", "integer", 1125, NA, NA,
                     desc = "The average number of pine stems per ha in the study area. ",
                     "Taken from Whitehead & Russo (2005), Cooke & Carroll (2017)"),
@@ -175,7 +181,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
            if (!is.null(sim$cohortData)) {
              message("Using sim$cohortData to change/update the sim$propPineRas, because sim$cohortData is present")
-             propPineRas <- propPineFromCD(sim$cohortData, sim$sppEquiv, sim$pixelGroupMap)
+             propPineRas <- propPineFromCD(sim$cohortData, sim$sppEquiv, sim$pixelGroupMap, P(sim)$pineSpToUse) # all cohortData stuff is at full resolution
              propPineRas = terra::project(terra::rast(propPineRas), terra::rast(sim$massAttacksStack), method = "bilinear" )
              sim$propPineRas <- raster::raster(propPineRas)
            }
@@ -195,10 +201,53 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalPredict", eventPriority = 5.5)
          },
          "dispersalPredict" = {
+           paramCheckOtherMods(sim, "")
            sim$predictedDT <- dispersalPredict(sim) # this object accumulates years over time
            message("Estimated ",
                    format(scientific = TRUE, round(sum(sim$predictedDT$ATKTREES, na.rm = TRUE), 0)),
                    " trees attacked after dispersal ", "in year ", time(sim) + 1)
+           pcd <- cohortData2PixelCohortData(sim$cohortData, sim$pixelGroupMap)
+           pineAttackedRas <- raster(sim$massAttacksStack)
+           sim$predictedDT <- sim$predictedDT[sim$predictedDT$ATKTREES > 0]
+           pineAttackedRas[sim$predictedDT$pixel] <- sim$predictedDT$ATKTREES
+           pineAttackedRasLg <- raster::raster(terra::project(terra::rast(pineAttackedRas), terra::rast(sim$pixelGroupMap)))
+           dt <- data.table(pineAtk = pineAttackedRasLg[], pixelIndex = seq(ncell(pineAttackedRasLg)))
+           dt <- na.omit(dt)
+           pinesInCohortData <- equivalentName(P(sim)$pineSpToUse, sim$sppEquiv,
+                                               equivalentNameColumn(levels(sim$cohortData$speciesCode), sim$sppEquiv))
+
+           dt1 <- dt[pcd, on = "pixelIndex", nomatch = 0] # assigns to all cohorts in a pixelIndex
+           dt1[, propB := B/sum(B), by = "pixelIndex"]
+           dt1[, numStems := asInteger(propB * Par$stemsPerHaAvg)]
+           dt1[speciesCode %in% pinesInCohortData, Bnew := asInteger((1 - pineAtk / numStems) * B)]
+           dt1[speciesCode %in% pinesInCohortData, Bloss := B - Bnew]
+           dt1[speciesCode %in% pinesInCohortData, B := Bnew]
+           set(dt1, NULL, c("Bnew", "propB", "numStems"), NULL)
+
+           # Next step need to rebuild the cohortData, but with new B
+           # This is an update join! WTF! https://stackoverflow.com/questions/44433451/r-data-table-update-join
+           pcd[dt1[speciesCode %in% pinesInCohortData, c("pixelIndex", "speciesCode", "B", "Bloss")],
+               on = c("speciesCode", "pixelIndex"), c("B", "Bloss"):= .(i.B, Bloss)]
+
+           message("Estimated ",
+                   format(scientific = TRUE, round(sum(pcd$Bloss, na.rm = TRUE), 0)),
+                   " Biomass lost after dispersal ", "in year ", time(sim) + 1)
+           whChanged <- pcd$pixelIndex %in% dt1$pixelIndex
+           pcdChanged <- pcd[whChanged]
+           pcdUnchanged <- pcd[!whChanged]
+           if (!("B" %in% P(sim)$cohortDefinitionCols)) {
+             co <- capture.output(dput(union(P(sim)$cohortDefinitionCols, "B")))
+             stop("P(sim)$cohortDefinitionCols must use Biomass (B column) because of partial mortality; ",
+                  "Please set this parameter globally e.g., \n",
+                  ".globals = list(cohortDefinitionCols = ", co, ")")
+           }
+           pgs <- LandR::generatePixelGroups(pcdChanged, P(sim)$cohortDefinitionCols,
+                                             maxPixelGroup = max(pcdUnchanged$pixelGroup))
+           set(pcdChanged, NULL, c("uniqueComboByRow", "uniqueComboByPixelIndex"), NULL)
+           pcdNew <- rbindlist(list(pcdUnchanged, pcdChanged))
+           pgm <- makePixelGroupMap(pcdNew, rasterToMatch = sim$rasterToMatch)
+           sim$cohortData <- unique(pcd[, -"pixelIndex"], by = P(sim)$cohortDefinitionCols) # need B because partial Pine mortality
+
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
          },
          "dispersalFit" = {
@@ -1307,8 +1356,8 @@ makeAnnualMeansDT <- function(pred, obs) {
   dt
 }
 
-propPineFromCD <- function(cd, sppEquiv, pgm) {
-  pinesInCohortData <- equivalentName(c("Pinu_con" , "Pinu_ban"), sppEquiv,
+propPineFromCD <- function(cd, sppEquiv, pgm, pineSpToUse) {
+  pinesInCohortData <- equivalentName(pineSpToUse, sppEquiv,
                                       equivalentNameColumn(levels(cd$speciesCode), sppEquiv))
   propPineDT <- cd[, list(propPine = sum(B[speciesCode %in% ..pinesInCohortData])/sum(B) ), by = "pixelGroup"]
   propPineRas <- rasterizeReduced(propPineDT, pgm, "propPine")
@@ -1330,4 +1379,10 @@ plot_atkYearByYearPlus1 <- function(maDT, title) {
     geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
     ggtitle(title) +
     theme_bw()
+}
+
+cohortData2PixelCohortData <- function(cd, pgm) {
+  dt <- data.table(pixelGroup = pgm[], pixelIndex = seq(ncell(pgm)))
+  dt <- na.omit(dt)
+  dt <- dt[cd, on = "pixelGroup"]
 }
