@@ -25,7 +25,7 @@ defineModule(sim, list(
                   "PredictiveEcology/LandR@development (>= 1.0.7.9007)",
                   "parallelly",
                   "PredictiveEcology/pemisc@development (>= 0.0.3.9001)",
-                  "PredictiveEcology/mpbutils (>= 0.1.3.9000)", "purrr",
+                  "PredictiveEcology/mpbutils (>= 0.1.3.9000)", "optimParallel", "purrr",
                   "quickPlot", "raster", "RColorBrewer",
                   "PredictiveEcology/reproducible@development (>= 1.2.8.9041)",
                   "PredictiveEcology/SpaDES.tools@development (>= 0.3.7.9021)",
@@ -35,8 +35,8 @@ defineModule(sim, list(
                     "The function predictQuotedSpread can be Cached or not; default is TRUE"),
     defineParameter("colNameForPrediction", "character", "ATKTREES", NA, NA,
                     "The column name in massAttacksDT that contains the values to predict from"),
-    defineParameter("coresForPrediction", "integer", 10, NA, NA,
-                    "The number of cores to use for predictQuotedSpread. These will be fork cluster cores."),
+    defineParameter("coresForPrediction", "integer", 10L, NA, NA,
+                    "The number of cores to use for `predictQuotedSpread`. These will be fork cluster cores."),
     defineParameter("dataset", "character", "Boone2011", NA, NA, "Which dataset to use for stand dynamic model fitting. One of 'Boone2011' (default), 'Berryman1979_fit', or 'Berryman1979_forced'. Others to be implemented later."),
     defineParameter("growthInterval", "numeric", 1, NA, NA, "This describes the interval time between growth events"),
     # defineParameter("p_advectionDir", "numeric", 90, 0, 359.9999,
@@ -73,7 +73,7 @@ defineModule(sim, list(
     defineParameter("pineSpToUse", "character", c("Pinu_con" , "Pinu_ban"), NA, NA,
                     paste("The 1 or 2 or 3 pine species to use as possible host for MPB.",
                           "There are currently no differentiation by species")),
-    defineParameter("stemsPerHaAvg", "integer", 1125, NA, NA,
+    defineParameter("stemsPerHaAvg", "integer", 1125L, NA, NA,
                     paste("The average number of pine stems per ha in the study area.",
                           "Taken from Whitehead & Russo (2005), Cooke & Carroll (2017).")),
     defineParameter("type", "character", "DEoptim", NA, NA,
@@ -243,7 +243,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            # Next step need to rebuild the cohortData, but with new B
            # This is an update join! WTF! https://stackoverflow.com/questions/44433451/r-data-table-update-join
            pcd[dt1[speciesCode %in% pinesInCohortData, c("pixelIndex", "speciesCode", "B")],
-               on = c("speciesCode", "pixelIndex"), c("B"):= .(i.B)]
+               on = c("speciesCode", "pixelIndex"), c("B") := .(i.B)]
 
            whChanged <- pcd$pixelIndex %in% dt1$pixelIndex
            pcdChanged <- pcd[whChanged]
@@ -504,28 +504,28 @@ Init <- function(sim) {
 }
 
 dispersalPredict <- function(sim) {
-
   pBest <- sim$fit_mpbSpreadOptimizer$optim$bestmem
 
-  if (is.null(sim$thresholdAttackTreesMinDetectable))
+  if (is.null(sim$thresholdAttackTreesMinDetectable)) {
     sim$thresholdAttackTreesMinDetectable <- 1.4
+  }
 
   predictedDT <- predictQuotedSpread(
-                       showSimilar = FALSE, # a bug in the database -- remove this
-                       massAttacksDT = sim$massAttacksDT_1Yr,
-                       windDirStack = sim$windDirStack,
-                       windSpeedStack = sim$windSpeedStack,
-                       propPineRas = sim$propPineRas,
-                       thresholdPineProportion = P(sim)$thresholdPineProportion,
-                       dispersalKernel = P(sim)$dispersalKernel,
-                       clNumber = Par$coresForPrediction,
-                       #useCache = P(sim)$cachePredict,
-                       maxDistance = P(sim)$maxDistance,
-                       quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
-                       #.cacheExtra = format(P(sim)$quotedSpread), # cache this instead
-                       p = pBest,
-                       colNameForPrediction = P(sim)$colNameForPrediction#,
-                       #omitArgs = "quotedSpread"
+    showSimilar = FALSE, # a bug in the database -- remove this
+    massAttacksDT = sim$massAttacksDT_1Yr,
+    windDirStack = sim$windDirStack,
+    windSpeedStack = sim$windSpeedStack,
+    propPineRas = sim$propPineRas,
+    thresholdPineProportion = P(sim)$thresholdPineProportion,
+    dispersalKernel = P(sim)$dispersalKernel,
+    clNumber = Par$coresForPrediction,
+    #useCache = P(sim)$cachePredict,
+    maxDistance = P(sim)$maxDistance,
+    quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
+    #.cacheExtra = format(P(sim)$quotedSpread), # cache this instead
+    p = pBest,
+    colNameForPrediction = P(sim)$colNameForPrediction#,
+    #omitArgs = "quotedSpread"
   )
 
   predictedDT[, CLIMATE := sim$climateSuitabilityMaps[[unique(layerName)]][pixel]]

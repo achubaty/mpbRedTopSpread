@@ -1,4 +1,5 @@
-crsLeaflet <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+crsLeaflet <- sp::CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
 if (FALSE) {
   saveSimList(sim, filename = "theSimList.qs")
   qs::qsave(sim$pineMap, "pineMap.qs")
@@ -18,8 +19,6 @@ if (FALSE) {
     }))
   pineMap <- writeRaster(sim$pineMap, filename = "PineMap.tif", overwrite = TRUE)
 }
-
-
 
 # Require::Require(c("shiny", "leaflet", "leafem"))
 #' RasterStacks are assumed to be annual time series, where the name of each layer
@@ -56,7 +55,6 @@ leafletSpaceTime <- function(..., opts) {
 
   # palGrey <- colorNumeric("Greys", 1:10*10)(10:100)
 
-
   objs <- list(...)
 
   classes <- list()
@@ -70,7 +68,6 @@ leafletSpaceTime <- function(..., opts) {
   namesObjs <- names(objs)
   objs <- Cache(makeLongLat, ..., classes = classes)
   names(objs) <- namesObjs
-
 
   ranges <- lapply(objs, function(x) 0:1)
   colrs <- lapply(objs, function(x) "Reds")
@@ -358,7 +355,7 @@ makeLongLat <- function(..., classes) {
     return(p)
   })
 
-  rasLFTmplate <- raster(extent(0, 1, 0, 1), res = 1, val= 1, crs = crsLeaflet)
+  rasLFTmplate <- raster(extent(0, 1, 0, 1), res = 1, val = 1, crs = crsLeaflet)
   objs[classes$stack] <- lapply(objs[classes$stack], function(stk) {
     stkList <- lapply(raster::unstack(stk), function(p) {
       fn <- reproducible:::.suffix(Filenames(p), suffix = "_lf")
@@ -385,6 +382,6 @@ makeLongLat <- function(..., classes) {
   objs
 }
 
-
-if (F)
+if (FALSE) {
   leafletSpaceTime(prediction = plotStackLeaf, studyArea = sim$studyArea, pineMap = sim$pineMap)
+}
