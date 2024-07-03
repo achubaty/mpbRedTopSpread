@@ -100,10 +100,10 @@ defineModule(sim, list(
     expectsInput("columnsForPixelGroups", "character",
                  paste("The names of the columns in cohortData that define unique pixelGroups.",
                        "Default is c('ecoregionGroup', 'speciesCode', 'age', 'B')."), sourceURL = NA),
-    expectsInput("climateSuitabilityMaps", "RasterStack",
+    expectsInput("climateSuitabilityMaps", "SpatRaster",
                  paste("A time series of climatic suitablity RasterLayers,",
                        "each with prefix 'X' and the year, e.g., 'X2010'"), sourceURL = NA),
-    expectsInput("massAttacksStack", "RasterStack",
+    expectsInput("massAttacksStack", "SpatRaster",
                  "Historical MPB attack maps (number of red attacked trees).", sourceURL = NA),
     expectsInput("pineMap", "RasterLayer",
                  "Percent cover maps by species (lodgepole and jack pine).", sourceURL = NA),
@@ -115,8 +115,8 @@ defineModule(sim, list(
                                     "canada-forests-attributes_attributs-forests-canada/",
                                     "2001-attributes_attributs-2001/",
                                     "NFI_MODIS250m_2001_kNN_Structure_Stand_Age_v1.tif")),
-    expectsInput("windDirStack", "RasterStack",
-                 "RasterStack of wind maps for every location in the study area",
+    expectsInput("windDirStack", "SpatRaster",
+                 "SpatRaster of wind maps for every location in the study area",
                  sourceURL = NA)
   ),
   outputObjects = bindrows(
@@ -126,7 +126,7 @@ defineModule(sim, list(
                           "BafterMPBKills (the new value for the B for the cohort after MPB attacks are removed), ",
                           "Bloss (the estimated B lost in that cohort after MPB attacks are removed)")),
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
-    createsOutput("massAttacksStack", "RasterStack",
+    createsOutput("massAttacksStack", "SpatRaster",
                   "This will be the same data as the inputted object, but will have a different resolution."),
     createsOutput("fit_mpbSpreadOptimizer", "list", "The output object from DEoptim"),
     createsOutput("propPineRas", "RasterLayer",
@@ -391,13 +391,13 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
 ### initilization
 Init <- function(sim) {
-  cr <- compareRaster(sim$rasterToMatch, sim$massAttacksStack, sim$pineMap, orig = TRUE)
+  cr <- terra::compareGeom(sim$rasterToMatch, sim$massAttacksStack, sim$pineMap)
   if (!isTRUE(cr))
     stop("Rasters sim$rasterToMatch, sim$massAttacksStack, sim$pineMap must all have same metadata; they do not")
 
 
   # AGGREGATE FROM HERE
-  if (fromDisk(sim$pineMap))
+  if (nzchar(Filenames(sim$pineMap)))
     sim$pineMap[] <- sim$pineMap[]
 
   ## use 1125 trees/ha, per Whitehead & Russo (2005), Cooke & Carroll (2017)
@@ -405,12 +405,13 @@ Init <- function(sim) {
 
   ## asymmetric spread (biased eastward)
   # lodgepole pine and jack pine together
-  mv <- maxValue(sim$pineMap)
-  propPineRas <- raster(sim$pineMap)
-  propPineRas[] <- if (mv > 1)
-    sim$pineMap[] <- sim$pineMap[] / 100 ## much faster than calc; ## TODO: allow different params per species
-  else
+  mv <- maxFn(sim$pineMap)
+  propPineRas <- rast(sim$pineMap)
+  propPineRas[] <- if (mv > 1) {
+    sim$pineMap[] / 100 ## much faster than calc; ## TODO: allow different params per species
+  } else {
     sim$pineMap[]
+  }
 
   nas <- is.na(propPineRas[])# & !is.na(rasterToMatch[])
   propPineRas[nas] <- 0
@@ -428,22 +429,32 @@ Init <- function(sim) {
   #)
   #names(mams) <- names(sim$massAttacksStack)
   #sim$massAttacksStack <- mams
-  sim$massAttacksStack <- Cache(aggregate, sim$massAttacksStack, res(rasCoarse)[1]/res(sim$massAttacksStack)[1], fun = "sum")
-  sim$propPineRas <- Cache(aggregate, propPineRas, res(rasCoarse)[1]/res(propPineRas)[1], fun = "mean")
-  sim$windDirStack <- Cache(aggregate, sim$windDirStack, res(rasCoarse)[1]/res(sim$windDirStack)[1], fun = "mean")
-  sim$windSpeedStack <- Cache(aggregate, sim$windSpeedStack, res(rasCoarse)[1]/res(sim$windSpeedStack)[1], fun = "mean")
   resRatio <- res(rasCoarse)[1]/res(sim$climateSuitabilityMaps)[1]
-  if (resRatio < 1) {
-    # climateSuitabilityMaps <- Cache(disaggregate, sim$climateSuitabilityMaps, fact = 10)
-    climateSuitabilityMaps <- terra:::project(terra::rast(sim$climateSuitabilityMaps), terra::rast(sim$massAttacksStack))
-    sim$climateSuitabilityMaps <- raster::stack(climateSuitabilityMaps)
-  }
-  if (!compareRaster(sim$massAttacksStack,
+  sim$massAttacksStack <- Cache(terra::aggregate, sim$massAttacksStack,
+                                res(rasCoarse)[1]/res(sim$massAttacksStack)[1],
+                                fun = "sum", na.rm = TRUE)
+  sim$propPineRas <- Cache(aggregate, propPineRas,
+                           res(rasCoarse)[1]/res(propPineRas)[1], fun = "mean",
+                           na.rm = TRUE)
+  sim$windDirStack <- Cache(aggregate, sim$windDirStack,
+                            res(rasCoarse)[1]/res(sim$windDirStack)[1],
+                            fun = "mean", na.rm = TRUE)
+  sim$windSpeedStack <- Cache(aggregate, sim$windSpeedStack,
+                              res(rasCoarse)[1]/res(sim$windSpeedStack)[1],
+                              fun = "mean", na.rm = TRUE)
+  sim$climateSuitabilityMaps <- Cache(aggregate, sim$climateSuitabilityMaps,
+                                      res(rasCoarse)[1]/res(sim$climateSuitabilityMaps)[1],
+                                      fun = "mean", na.rm = TRUE)
+  # if (resRatio < 1) {
+  #   # climateSuitabilityMaps <- Cache(disaggregate, sim$climateSuitabilityMaps, fact = 10)
+  #   climateSuitabilityMaps <- terra:::project(sim$climateSuitabilityMaps, terra::rast(sim$massAttacksStack))
+  #   sim$climateSuitabilityMaps <- climateSuitabilityMaps
+  # }
+  terra::compareGeom(sim$massAttacksStack,
                      sim$propPineRas,
                      sim$windDirStack,
                      sim$windSpeedStack,
-                     sim$climateSuitabilityMaps))
-    stop("The coarser resolution files need to be all the same resolution")
+                     sim$climateSuitabilityMaps)
 
   # options(opts)
   ## create a data.table consisting of the reduced map of current MPB distribution,
@@ -451,54 +462,58 @@ Init <- function(sim) {
   ## use only the start year's non-zero and non-NA data
   ids <- sim$massAttacksStack[]
   ids <- which(ids > 0, arr.ind = TRUE)
-  mpb.sp <- raster::xyFromCell(sim$massAttacksStack, cell = ids[, "row"])
+  mpb.sp <- terra::xyFromCell(sim$massAttacksStack, cell = ids[, "row"])
   # crs(mpb.sp) <- crs(sim$massAttacksStack)
   sim$massAttacksDT <- as.data.table(ids)
   setnames(sim$massAttacksDT, old = c("row", "col"), new = c("pixel", "layerNum"))
   sim$massAttacksDT <- data.table(sim$massAttacksDT, mpb.sp)
 
   sim$massAttacksDT[, layerName := names(sim$massAttacksStack)[layerNum]]
-  sim$massAttacksDT[, `:=`(
-    CLIMATE = raster::extract(sim$climateSuitabilityMaps[[.BY[[1]]]], cbind(x, y)),
-    ATKTREES = raster::extract(sim$massAttacksStack[[.BY[[1]]]], cbind(x, y))#,
+  sim$massAttacksDT[, `:=`(c("CLIMATE", "ATKTREES"), {
+    bb <- .BY
+    CLIMATE = terra::extract(sim$climateSuitabilityMaps[[bb[[1]]]], cbind(x, y))
+    ATKTREES = terra::extract(sim$massAttacksStack[[bb[[1]]]], cbind(x, y))#,
+    list(CLIMATE = unlist(CLIMATE), ATKTREES = unlist(ATKTREES))
+  }
   ),
   by = "layerName"]
 
   sim$predictedDT <- sim$massAttacksDT[0]
 
   ## growth data
-  mod$growthData <- switch(P(sim)$dataset,
-                           "Berryman1979_fit" = {
-                             ## Berryman1979_forced
-                             data.frame(
-                               year = c(1:15),
-                               log10Xtm1 = c(-3.1, -2.75, -2.7, -2.4, -2.3, -1.2, -1, 0.2, 0.9, 0.65,
-                                             1.05, 0.95, 1.1, 1.5, 1.85),
-                               log10Rt = c(0.35, 0.4, 0.1, -0.4, -0.65, 0.3, 1, 0.75, 1.2, -0.7,
-                                           -0.4, 0.2, 0.45, 0.3, -0.78),
-                               study = c(rep("Tunnock 1970", 9), rep("Parker 1973", 6)),
-                               stringsAsFactors = TRUE
-                             )
-                           },
-                           "Berryman1979_forced" = {
-                             ## same as Berryman1979_fit
-                             data.frame(
-                               year = c(1:15),
-                               log10Xtm1 = c(-3.1, -2.75, -2.7, -2.4, -2.3, -1.2, -1, 0.2, 0.9, 0.65,
-                                             1.05, 0.95, 1.1, 1.5, 1.85),
-                               log10Rt = c(0.35, 0.4, 0.1, -0.4, -0.65, 0.3, 1, 0.75, 1.2, -0.7,
-                                           -0.4, 0.2, 0.45, 0.3, -0.78),
-                               study = c(rep("Tunnock 1970", 9), rep("Parker 1973", 6)),
-                               stringsAsFactors = TRUE
-                             )
-                           },
-                           "Boone2011" = {
-                             data <- read.csv(file.path(dataPath(sim), "BooneCurveData2.csv"))
-                             data$Site <- c(rep("A", 6), rep("B", 6), rep("D", 5), rep("E", 4), rep("F", 4), rep("G", 3))
-                             data$Year <- c(2000:2005, 2000:2005, 2001:2005, 2002:2005, 2002:2005, 2003:2005)
-                             data
-                           }
-  )
+  mod$growthData <-
+    switch(P(sim)$dataset,
+           "Berryman1979_fit" = {
+             ## Berryman1979_forced
+             data.frame(
+               year = c(1:15),
+               log10Xtm1 = c(-3.1, -2.75, -2.7, -2.4, -2.3, -1.2, -1, 0.2, 0.9, 0.65,
+                             1.05, 0.95, 1.1, 1.5, 1.85),
+               log10Rt = c(0.35, 0.4, 0.1, -0.4, -0.65, 0.3, 1, 0.75, 1.2, -0.7,
+                           -0.4, 0.2, 0.45, 0.3, -0.78),
+               study = c(rep("Tunnock 1970", 9), rep("Parker 1973", 6)),
+               stringsAsFactors = TRUE
+             )
+           },
+           "Berryman1979_forced" = {
+             ## same as Berryman1979_fit
+             data.frame(
+               year = c(1:15),
+               log10Xtm1 = c(-3.1, -2.75, -2.7, -2.4, -2.3, -1.2, -1, 0.2, 0.9, 0.65,
+                             1.05, 0.95, 1.1, 1.5, 1.85),
+               log10Rt = c(0.35, 0.4, 0.1, -0.4, -0.65, 0.3, 1, 0.75, 1.2, -0.7,
+                           -0.4, 0.2, 0.45, 0.3, -0.78),
+               study = c(rep("Tunnock 1970", 9), rep("Parker 1973", 6)),
+               stringsAsFactors = TRUE
+             )
+           },
+           "Boone2011" = {
+             data <- read.csv(file.path(dataPath(sim), "BooneCurveData2.csv"))
+             data$Site <- c(rep("A", 6), rep("B", 6), rep("D", 5), rep("E", 4), rep("F", 4), rep("G", 3))
+             data$Year <- c(2000:2005, 2000:2005, 2001:2005, 2002:2005, 2002:2005, 2003:2005)
+             data
+           }
+    )
 
   return(invisible(sim))
 }
@@ -690,7 +705,6 @@ Validate <- function(sim) {
       Cache(Plots, fn = plot_ObsVPredAbund2, dt = obsPredDT, #types = "screen",
             filename = paste0("Annual Means: Year v Obs and Pred ", startToEnd), omitArgs = "filename")
 
-      # browser()
       print(paste("ROC mean value: ", round(mean(stackPredVObs$ROCs$ROC, na.rm = TRUE), 3)))
 
       messageDF(stackPredVObs$ROCs)
@@ -871,7 +885,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                          windDirStack, windSpeedStack, outputPath, dispersalKernel) {
 
   # Make sure propPineRas is indeed a proportion
-  mv <- maxValue(propPineRas)
+  mv <- maxFn(propPineRas)
   if (mv > 1)
     propPineRas[] <- propPineRas[] / 100 ## much faster than calc; ## TODO: allow different params per species
 
@@ -984,9 +998,10 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                     # reps = 1,
                                     quotedSpread = objsForDEoptim$quotedSpread,
                                     control = objsForDEoptim$control,
-                                    useCloud = TRUE, userTags = c("MPB fit_mpbSpreadOptimizer"),
-                                    cacheId = cacheID,
-                                    cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
+                                    # useCloud = TRUE,
+                                    userTags = c("MPB fit_mpbSpreadOptimizer")#,
+                                    #cacheId = cacheID,
+                                    #cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
     )
 
     fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, names(p))
@@ -1402,3 +1417,4 @@ cohortData2PixelCohortData <- function(cd, pgm) {
   dt <- na.omit(dt)
   return(dt)
 }
+
