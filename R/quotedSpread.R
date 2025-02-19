@@ -1,6 +1,6 @@
 quotedSpreadWeibull3 <- quote({
-  to <- raster::xyFromCell(massAttacksRas, atksKnownNextYr$pixels)
-  from <- raster::xyFromCell(massAttacksRas, starts)
+  to <- terra::xyFromCell(massAttacksRas, atksKnownNextYr$pixels)
+  from <- terra::xyFromCell(massAttacksRas, starts)
   out33 <- SpaDES.tools::distanceFromEachPoint(
     to = to,
     from = from,
@@ -21,8 +21,8 @@ quotedSpreadWeibull3 <- quote({
 })
 
 quotedSpreadExponential <- quote({
-  to <- raster::xyFromCell(massAttacksRas, atksKnownNextYr$pixels)
-  from <- raster::xyFromCell(massAttacksRas, starts)
+  to <- terra::xyFromCell(massAttacksRas, atksKnownNextYr$pixels)
+  from <- terra::xyFromCell(massAttacksRas, starts)
   out33 <- SpaDES.tools::distanceFromEachPoint(
     to = to,
     from = from,
@@ -42,8 +42,8 @@ quotedSpreadExponential <- quote({
 })
 
 quotedSpreadGeneralGamma <- quote({
-  to <- raster::xyFromCell(massAttacksRas, atksKnownNextYr$pixels)
-  from <- raster::xyFromCell(massAttacksRas, starts)
+  to <- terra::xyFromCell(massAttacksRas, atksKnownNextYr$pixels)
+  from <- terra::xyFromCell(massAttacksRas, starts)
   out33 <- SpaDES.tools::distanceFromEachPoint(
     to = to,
     from = from,

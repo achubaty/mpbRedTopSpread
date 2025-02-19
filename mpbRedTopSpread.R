@@ -21,6 +21,7 @@ defineModule(sim, list(
                   "BioSIM", ##  ## not on CRAN/GitHub; see install info at top of this file
                   "CircStats", "data.table", "DEoptim", "EnvStats",
                   "gamlss", "ggplot2", "gt",
+                  "PredictiveEcology/clusters@main",
                   "PredictiveEcology/SpaDES.core@development (>= 1.0.8.9011)",
                   "PredictiveEcology/LandR@development (>= 1.0.7.9007)",
                   "parallelly",
@@ -264,7 +265,8 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
          },
          "dispersalFit" = {
-           sim$fit_mpbSpreadOptimizer <- dispersalFit(quotedSpread = P(sim)$quotedSpread,
+           quotedSpread <- getQuotedSpread(Par$dispersalKernel)
+           sim$fit_mpbSpreadOptimizer <- dispersalFit(quotedSpread = quotedSpread,
                                                       propPineRas = sim$propPineRas, studyArea = sim$studyArea,
                                                       massAttacksDT = sim$massAttacksDT,
                                                       massAttacksStack = sim$massAttacksStack,
@@ -276,7 +278,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                                                       # bgSettlingProp = P(sim)$bgSettlingProp,
                                                       dispersalKernel = P(sim)$dispersalKernel,
                                                       type = P(sim)$type,
-                                                      outputPath = outputPath(sim),
+                                                      paths = paths(sim),
                                                       # currentTime = time(sim),
                                                       reqdPkgs = reqdPkgs(module = currentModule(sim),
                                                                           modulePath = modulePath(sim))[[currentModule(sim)]]
@@ -371,16 +373,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
 
   }
 
-  kern <- tolower(P(sim)$dispersalKernel)
-  if (grepl("weibul", kern))
-    P(sim, "quotedSpread") <- quotedSpreadWeibull3
-  if (grepl("exponen", kern))
-    P(sim, "quotedSpread") <- quotedSpreadExponential
-  if (grepl("gamma", kern))
-    P(sim, "quotedSpread") <- quotedSpreadGeneralGamma
-
-  if (is.null(P(sim)$quotedSpread))
-    P(sim, "quotedSpread") <- quotedSpreadWeibull3
+  # P(sim)$quotedSpread <- getQuotedSpread(kernel = Par$dispersalKernel)
 
   if (!suppliedElsewhere("columnsForPixelGroups", sim)) {
     sim$columnsForPixelGroups <- LandR::columnsForPixelGroups
@@ -524,6 +517,7 @@ dispersalPredict <- function(sim) {
   if (is.null(sim$thresholdAttackTreesMinDetectable)) {
     sim$thresholdAttackTreesMinDetectable <- 1.4
   }
+  quotedSpread <- getQuotedSpread(kernel = Par$dispersalKernel)
 
   predictedDT <- predictQuotedSpread(
     showSimilar = FALSE, # a bug in the database -- remove this
@@ -536,7 +530,7 @@ dispersalPredict <- function(sim) {
     clNumber = Par$coresForPrediction,
     #useCache = P(sim)$cachePredict,
     maxDistance = P(sim)$maxDistance,
-    quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
+    quotedSpread = quotedSpread, # doesn't cache correctly
     #.cacheExtra = format(P(sim)$quotedSpread), # cache this instead
     p = pBest,
     colNameForPrediction = P(sim)$colNameForPrediction#,
@@ -552,7 +546,7 @@ Validate <- function(sim) {
   startToEnd <- paste0(start(sim), " to ", end(sim), "_", Sys.time())
 
   if (is.null(sim$DEout)) {
-    DEoutFileList <- dir(outputPath(sim), pattern = "DEout", full.names = TRUE)
+    DEoutFileList <- dir(paths$outputPath, pattern = "DEout", full.names = TRUE)
     fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
   }
 
@@ -609,7 +603,9 @@ Validate <- function(sim) {
       #########################################################
 
       opts2 <- options(reproducible.cacheSpeed = "fast")
-      on.exit(options(opts2))
+      on.exit(options(opts2), add = TRUE)
+
+      quotedSpread <- getQuotedSpread(kernel = Par$dispersalKernel)
 
       if (NROW(sim$predictedDT) == 0) {
         st1 <- system.time(sim$predictedDT <- Cache(predictQuotedSpread,
@@ -621,8 +617,8 @@ Validate <- function(sim) {
                                                     dispersalKernel = P(sim)$dispersalKernel,#  "generalgamma",
                                                     maxDistance = P(sim)$maxDistance,
                                                     # DON'T ADD clNumber here -- it will do it automatically at the "year" level
-                                                    quotedSpread = P(sim)$quotedSpread, # doesn't cache correctly
-                                                    .cacheExtra = format(P(sim)$quotedSpread), # cache this instead
+                                                    quotedSpread = quotedSpread, # doesn't cache correctly
+                                                    .cacheExtra = format(quotedSpread), # cache this instead
                                                     p = p,
                                                     omitArgs = "quotedSpread"
         ))
@@ -882,7 +878,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                          rasterToMatch, maxDistance, # massAttacksRas,
                          params, #currentTime, bgSettlingProp,
                          type, reqdPkgs,
-                         windDirStack, windSpeedStack, outputPath, dispersalKernel) {
+                         windDirStack, windSpeedStack, dispersalKernel, paths) {
 
   # Make sure propPineRas is indeed a proportion
   mv <- maxFn(propPineRas)
@@ -939,70 +935,123 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   #   however, don't pass ones that are passed manually at the DEoptim call
   #   Generally, only pass "very small" objects in the DEoptim call. Large ones do this way (i.e.,
   #   export them first.
+  objFunInner <- objFunInner
   objsToExport <- setdiff(formalArgs("objFun"),
                           # The following are small and passed at the time of the DEoptim call
                           c("p", "quotedSpread", "distanceFunction"))
   # need both the objsToExport vector, and the object called "objsToExport"
   objsToExport <- c(objsToExport, "reqdPkgs", "objsToExport", "libPaths")
 
+  if (any(type %in% c("DEoptim", "fit", "predict"))) {
+
+  ips <- c(# rep("localhost", 40), # rep("n54", 8), rep("n14", 8), rep("n105", 8),
+           rep("n181", 24),
+           rep("n179", 24))
+  numCoresNeeded <- length(ips) # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
+
+  # c("rgdal", "rgeos", "sf", "sp", "raster", "terra", "lwgeom")
+  reqdPkgs <- grep(paste(collapse = "|", c("PredictiveEcology/SpaDES.tools@development (HEAD)", # "raster",
+    "CircStats",
+    "data.table",
+    "purrr", "mpbutils", "gamlss",
+    # "rgdal", "rgeos",
+    "sf",
+    #"sp", "raster",
+    "terra", "lwgeom")),
+    reqdPkgs, value = TRUE)
+  control <- clusterSetup(strategy = 3, itermax = 60, cores = unique(ips), # logPath = file.path(dataPath(sim)),
+                          libPath = libPaths[1],
+                          logPath = file.path(paths$outputPath, "log"),
+                          objsNeeded = objsToExport,
+                          pkgsNeeded = reqdPkgs)
+  on.exit(try(parallel::stopCluster(control$cl)), add = TRUE)
   # put objsToExport into .GlobalEnv -- the DEoptim function gets all arguments from .GlobalEnv
-  list2env(mget(objsToExport), envir = .GlobalEnv)
+  if (FALSE) { # all brought into clusterSetup
+    list2env(mget(objsToExport), envir = .GlobalEnv)
+    on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
 
-  # 213 appears slower than rest
-  ipsNum <- c(189, 184, 217, 97, 106, 220, 213)
-  ips <- paste0("10.20.0.", ipsNum)
-  ips <- rep(ips, c(33, 16, 13, 23, 20, 5, 0))
-  ips <- rep("localhost", 10)
-  adjustments = 1#c(0.8, 1, 1, 1, 1, 1, 1)
-  numCoresNeeded <- 110 # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
+    # 213 appears slower than rest
+    # ipsNum <- c(189, 184, 217, 97, 106, 220, 213)
+  # ips <- paste0("10.20.0.", ipsNum)
+  # ips <- rep(ips, c(33, 16, 13, 23, 20, 5, 0))
+  # ips <- rep("localhost", 10)
+  # adjustments = 1#c(0.8, 1, 1, 1, 1, 1, 1)
 
-  reqdPkgs <- grep(paste(collapse = "|", c("SpaDES.tools", "raster", "CircStats", "data.table",
-                                           "purrr", "mpbutils", "gamlss")),
-                   reqdPkgs, value = TRUE)
+  }
+
   stPre <- Sys.time()
   stFileName <- gsub(":", "-", format(stPre))
-  customControls <- list(strategy = 2,
-                         itermax = 60,
-                         NP = numCoresNeeded)
+  # customControls <- list(strategy = 2,
+  #                        itermax = 60,
+  #                        NP = numCoresNeeded)
 
 
   # This series of functions including the first "if" block below is to try to determine if
   #   the DEoptim needs rerunning. If it doesn't, then don't bother setting up cluster.
-  cacheID <- "34814d19554e3e4b" # This is manual override the DEoptim cache. Set to NULL if need to rerun.
-  objsForDEoptim <- list(DEoptim, fn = objFun,
-                         lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
-                         upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
-                         # reps = 1,
-                         quotedSpread = quotedSpread,
-                         control = do.call(DEoptim.control, customControls))
-  dig <- Cache(CacheDigest, objsForDEoptim) # See if this has already been cached before
-  if (!(isFALSE(attr(dig, ".Cache")$newCache && is.null(cacheID))) &&
-    isTRUE(type %in% c("DEoptim", "fit")) ) {
-    cl <- LandR::clusterSetup(workers = ips, objsToExport = objsToExport,
-                              reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
-                              quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
-                                                                     "sp", "raster", "terra", "lwgeom"),
-                                                                   repos = "https://cran.rstudio.com")),
-                              numCoresNeeded = numCoresNeeded, adjustments = adjustments)
-    on.exit(try(stopCluster(cl), silent = TRUE), add = TRUE)
-    customControls$cl <- cl
+  # cacheID <- "34814d19554e3e4b" # This is manual override the DEoptim cache. Set to NULL if need to rerun.
+  cacheID <- NULL
 
-    message("Starting DEoptim")
-  }
+  # control <- do.call(DEoptim.control, control)
+  # objsForDEoptim <- list(DEoptim, fn = objFun,
+  #                        lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
+  #                        upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+  #                        # reps = 1,
+  #                        quotedSpread = quotedSpread,
+  #                        control = do.call(DEoptim.control, control))
+  # dig <- Cache(CacheDigest, objsForDEoptim) # See if this has already been cached before
+  # if (!(isFALSE(attr(dig, ".Cache")$newCache && is.null(cacheID))) &&
+  #   isTRUE(type %in% c("DEoptim", "fit")) ) {
+  #
+  #   # cl <- clusters::clusterSetup(workers = ips, objsToExport = objsToExport,
+  #   #                           reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
+  #   #                           quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
+  #   #                                                                  "sp", "raster", "terra", "lwgeom"),
+  #   #                                                                repos = "https://cran.rstudio.com")),
+  #   #                           numCoresNeeded = numCoresNeeded, adjustments = adjustments)
+  #   # on.exit(try(stopCluster(cl), silent = TRUE), add = TRUE)
+  #   # customControls$cl <- cl
+  #
+  #   message("Starting DEoptim")
+  # }
 
-  if (any(type %in% c("DEoptim", "fit", "predict"))) {
     # This is customized to work on both Linux and Windows
-    fit_mpbSpreadOptimizer <- Cache(DEoptim, fn = objsForDEoptim$fn,
-                                    lower = objsForDEoptim$lower,#c(500, 1, -90, 0.9, 1.1, 5),
-                                    upper = objsForDEoptim$upper,#c(30000, 10, 240, 1.8, 1.6, 30),
-                                    # reps = 1,
-                                    quotedSpread = objsForDEoptim$quotedSpread,
-                                    control = objsForDEoptim$control,
-                                    # useCloud = TRUE,
-                                    userTags = c("MPB fit_mpbSpreadOptimizer")#,
-                                    # cacheId = cacheID,
-                                    # cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
-    )
+
+    control <- controlSet(control)
+
+    browser()
+    DEout <- DEoptimIterative2(fn = objFun,
+                               lower = lower,
+                               upper = upper,
+                               # itersToDo = seq(objsForDEoptim$control$itermax),
+                               control = control,
+                               quotedSpread = quotedSpread,
+                               objFunInner = objFunInner,
+                               # iterStep,
+                               # itermax = objsForDEoptim$control$itermax,
+                               # .c, #objsForDEoptim$control$c,
+                               # FS_formula, covMinMax, tests, maxFireSpread, mutuallyExclusive,
+                               # doObjFunAssertions, Nreps, objFunCoresInternal, thresh, rep,
+                               .verbose = 1, .plots = Par$.plots,
+                               figurePath = figurePath, cachePath = cachepath)
+    # objsForDEoptim$fn(quotedSpread = quotedSpread, p = apply(cbind(lower, upper), 1, mean))
+    for (iter in seq(objsForDEoptim$control$itermax)) {
+      objsForDEoptim$control$itermax <- 1
+      DE[[iter]] <- Cache(
+        DEoptim(fn = objsForDEoptim$fn,
+                lower = objsForDEoptim$lower,#c(500, 1, -90, 0.9, 1.1, 5),
+                upper = objsForDEoptim$upper,#c(30000, 10, 240, 1.8, 1.6, 30),
+                # reps = 1,
+                quotedSpread = objsForDEoptim$quotedSpread,
+                control = objsForDEoptim$control),
+        # useCloud = TRUE,
+        userTags = c("MPB fit_mpbSpreadOptimizer")#,
+        # cacheId = cacheID,
+        # cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
+      )
+      objsForDEoptim$control$initialpop <- DE[[iter]]$member$pop
+    }
+    fit_mpbSpreadOptimizer <- DE
+    browser()
 
     fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, names(p))
     saveRDS(fit_mpbSpreadOptimizer, file = file.path(outputPath, paste0("DEout_", stFileName, ".rds")))
@@ -1012,19 +1061,26 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     try(parallel::stopCluster(cl), silent = TRUE)
 
   } else if (any(type == "runOnce")) {
-    DEoutFileList <- dir(outputPath, pattern = "DEout", full.names = TRUE)
-    fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
-    if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
-      message("Please add names to parameter vector in fit_mpbSpreadOptimizer")
-      fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+    list2env(mget(objsToExport), envir = .GlobalEnv)
+    on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
+
+    DEoutFileList <- dir(paths$outputPath, pattern = "DEout", full.names = TRUE)
+    if (length(DEoutFileList)) {
+      fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
+      if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
+        message("Please add names to parameter vector in fit_mpbSpreadOptimizer")
+        fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
+      }
+      pBest <- fit_mpbSpreadOptimizer$optim$bestmem[] # use [] to keep names
+      pBest["p_sdDist"] <- 0.08
+    } else {
+      pBest <- p
     }
-    pBest <- fit_mpbSpreadOptimizer$optim$bestmem[] # use [] to keep names
-    pBest["p_sdDist"] <- 0.08
-    pBest <- p
     message("This runOnce is intended to be used interactively")
     out <- objFun(quotedSpread = quotedSpread, # reps = 1,
-                  p = pBest,
-                  massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT)
+                  p = pBest, objFunInner = objFunInner)#,
+                  #massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT)
+    browser()
     fit_mpbSpreadOptimizer <- NULL
     browser()
   } else if (any(type == "optim")) {
@@ -1066,6 +1122,10 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYr
                              dispersalKernel, maxDistance, windSpeed, p_nu = NULL) {
 
   if (p_advectionMag > 0) {
+    # fromAndToXY <- xyFromCell(propPineRas, c(fromCell, toCells))
+    # len <- length(fromCell)
+    # fromXY <- fromAndToXY[seq(len), ]
+    # toXYs <- fromAndToXY[-seq(len), ]
     fromXY <- xyFromCell(propPineRas, fromCell)
     toXYs <-  xyFromCell(propPineRas, toCells)
     if (length(windDir) > 1) {
@@ -1418,3 +1478,18 @@ cohortData2PixelCohortData <- function(cd, pgm) {
   return(dt)
 }
 
+
+getQuotedSpread <- function(kernel = "weibul") {
+  kern <- tolower(kernel)
+  if (grepl("weibul", kern))
+    quotedSpread <- quotedSpreadWeibull3
+  if (grepl("exponen", kern))
+    quotedSpread <- quotedSpreadExponential
+  if (grepl("gamma", kern))
+    quotedSpread <- quotedSpreadGeneralGamma
+
+  if (is.null(quotedSpread))
+    quotedSpread <- quotedSpreadWeibull3
+
+  quotedSpread
+}
