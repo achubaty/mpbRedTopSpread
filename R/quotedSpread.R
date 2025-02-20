@@ -114,6 +114,7 @@ predictQuotedSpread <- function(massAttacksDT,
                       }
   )
   prediction <- rbindlist(prediction, idcol = "layerName")
+  save(prediction, file = "before cbind.rda")
   prediction[, `:=`(pixel = cellFromXY(propPineRas, cbind(x, y)))]
   prediction[, predYear := yrNamesPlus1(layerName)]
   setnames(prediction, "val", colNameForPrediction)
