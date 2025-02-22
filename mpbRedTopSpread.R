@@ -897,7 +897,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                  weibul = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist")])
                    ll$lower <- c(5000,  0.01,  0.01)
-                   ll$upper <- c(105000, 2000, 3.5)
+                   ll$upper <- c(135000, 2000, 10.5) # changed Feb 21, 2025 Eliot: was 105000, 2000, 3.5
                    ll
                  },
                  genera = {
@@ -944,10 +944,11 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
 
   if (any(type %in% c("DEoptim", "fit", "predict"))) {
 
-  ips <- c(rep("localhost", 24), # rep("n54", 8), rep("n14", 8), rep("n105", 8),
-           rep("n181", 24),
-           rep("n179", 24),
-           rep("n169", 24))
+  ips <- c(rep("localhost", 6), # rep("n54", 8), rep("n14", 8), rep("n105", 8),
+           rep("n181", 22),
+           rep("n179", 22),
+           rep("n169", 50))
+  ips <- rep("n169", 30)
   numCoresNeeded <- length(ips) # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
 
   # c("rgdal", "rgeos", "sf", "sp", "raster", "terra", "lwgeom")
@@ -960,7 +961,8 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
     #"sp", "raster",
     "terra", "lwgeom"))#,
     #reqdPkgs))
-  control <- clusterSetup(strategy = 3, itermax = 60, cores = ips, # logPath = file.path(dataPath(sim)),
+  control <- clusterSetup(messagePrefix = "MPB_",
+                          strategy = 3, itermax = 300, cores = ips, # logPath = file.path(dataPath(sim)),
                           libPath = libPaths[1],
                           logPath = file.path(paths$outputPath, "log"),
                           objsNeeded = objsToExport,
@@ -1019,8 +1021,8 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
 
     control <- clusters:::controlSet(control)
 
-    # list2env(mget(objsToExport), envir = .GlobalEnv)
-    # on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
+    list2env(mget(objsToExport), envir = .GlobalEnv)
+    on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
 
     DEout <- clusters:::DEoptimIterative2(fn = objFun,
                                lower = lower,
@@ -1035,8 +1037,10 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                # FS_formula, covMinMax, tests, maxFireSpread, mutuallyExclusive,
                                # doObjFunAssertions, Nreps, objFunCoresInternal, thresh, rep,
                                .verbose = 1, .plots = Par$.plots,
+                               runName = .runName,
                                figurePath = file.path(paths$outputPath, "figurePath"), cachePath = paths$cachePath)
     # objsForDEoptim$fn(quotedSpread = quotedSpread, p = apply(cbind(lower, upper), 1, mean))
+    browser()
     for (iter in seq(objsForDEoptim$control$itermax)) {
       objsForDEoptim$control$itermax <- 1
       DE[[iter]] <- Cache(
@@ -1089,6 +1093,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   } else if (any(type == "optim")) {
     # stop("This has not been maintained and appears to be not capable of estimating parameters")
     numCoresNeeded <- 5
+    browser() # This next call has not been updated for clusters::clusterSetup
     cl <- clusterSetup(rep("localhost", numCoresNeeded), objsToExport = objsToExport,
                        reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = FALSE
     )
