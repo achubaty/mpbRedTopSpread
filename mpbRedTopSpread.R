@@ -279,6 +279,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                                                       dispersalKernel = P(sim)$dispersalKernel,
                                                       type = P(sim)$type,
                                                       paths = paths(sim),
+                                                      .runName = Par$.runName,
                                                       # currentTime = time(sim),
                                                       reqdPkgs = reqdPkgs(module = currentModule(sim),
                                                                           modulePath = modulePath(sim))[[currentModule(sim)]]
@@ -878,7 +879,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                          rasterToMatch, maxDistance, # massAttacksRas,
                          params, #currentTime, bgSettlingProp,
                          type, reqdPkgs,
-                         windDirStack, windSpeedStack, dispersalKernel, paths) {
+                         windDirStack, windSpeedStack, dispersalKernel, paths, .runName) {
 
   # Make sure propPineRas is indeed a proportion
   mv <- maxFn(propPineRas)
