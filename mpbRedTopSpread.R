@@ -1045,7 +1045,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                           # doObjFunAssertions, Nreps, objFunCoresInternal, thresh, rep,
                                           .verbose = 1, .plots = Par$.plots,
                                           runName = .runName,
-                                          figurePath = file.path(paths$outputPath, "figurePath"), cachePath = paths$cachePath)
+                                          figurePath = file.path(paths$outputPath, "figures"), cachePath = paths$cachePath)
     # objsForDEoptim$fn(quotedSpread = quotedSpread, p = apply(cbind(lower, upper), 1, mean))
   }
   return(DEout)
