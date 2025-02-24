@@ -88,6 +88,11 @@ defineModule(sim, list(
                     "This describes the interval between plot events."),
     defineParameter(".runName", "character", NULL, NA, NA,
                     "An optional name for a specific run."),
+    defineParameter(".coresList", "list", list(rep("localhost", parallel::detectCores()/2)), NA, NA,
+                    "A list of cores for fitting such as `list(rep('localhost', 30), rep('n181', 30)`",
+                    "Each element in the list should be 10x the number of parameters being estimated ",
+                    "so, 30 for the kernels with 3 parameters. If the list is length >1, then it ",
+                    "will run fittings in parallel, with mc.cores = length(.coresList)"),
     defineParameter(".saveInitialTime", "numeric", NA, NA, NA,
                     "This describes the simulation time at which the first save event should occur"),
     defineParameter(".saveInterval", "numeric", NA, NA, NA,
@@ -267,28 +272,42 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
          "dispersalFit" = {
            quotedSpread <- getQuotedSpread(Par$dispersalKernel)
            nams <- names(sim$massAttacksStack)
-           minNumYears <- length(nams) - 1 # just do 2 for now
-           fitDateRanges <- mcMap(lastYear = minNumYears:length(nams), function(lastYear) {
-             keepLayers <- nams[seq(lastYear)]
-             dispersalFit(quotedSpread = quotedSpread,
-                                                        propPineRas = sim$propPineRas, studyArea = sim$studyArea,
-                                                        massAttacksDT = sim$massAttacksDT[layerName %in% keepLayers],
-                                                        massAttacksStack = sim$massAttacksStack[[keepLayers]],
-                                                        maxDistance = P(sim)$maxDistance,
-                                                        params = P(sim),
-                                                        windDirStack = sim$windDirStack[[keepLayers]],
-                                                        windSpeedStack = sim$windSpeedStack[[keepLayers]],
-                                                        rasterToMatch = sim$rasterToMatch,
-                                                        # bgSettlingProp = P(sim)$bgSettlingProp,
-                                                        dispersalKernel = P(sim)$dispersalKernel,
-                                                        type = P(sim)$type,
-                                                        paths = paths(sim),
-                                                        .runName = paste0(Par$.runName, "_", head(keepLayers, 1), "_", tail(keepLayers, 1)),
-                                                        # currentTime = time(sim),
-                                                        reqdPkgs = reqdPkgs(module = currentModule(sim),
-                                                                            modulePath = modulePath(sim))[[currentModule(sim)]]
-             )
-           })
+           minNumYears <- length(nams) - 15 # just do 10 for now # x2020 is last; - 10 will be x2010 as first
+           RNGkind("L'Ecuyer-CMRG")
+           lastYearsToDo <- minNumYears:length(nams)
+           nCores <- length(Par$.coresList)
+           halfSeq <- round(length(lastYearsToDo)/2)
+           efficientSeq <- unique(c(head(lastYearsToDo, halfSeq), rev(tail(lastYearsToDo, halfSeq))))
+           lastYearsToDoList <- suppressWarnings(split(efficientSeq, seq(7)))
+           fitDateRanges <- mcMap(
+             lastYear = lastYearsToDoList,
+             cores = Par$.coresList,
+             mc.cores = length(Par$.coresList),
+             mc.preschedule = FALSE,
+             function(lastYear, cores) {
+               keepLayers <- nams[seq(lastYear)]
+               dispersalFit(quotedSpread = quotedSpread,
+                            propPineRas = sim$propPineRas, studyArea = sim$studyArea,
+                            massAttacksDT = sim$massAttacksDT[layerName %in% keepLayers],
+                            massAttacksStack = sim$massAttacksStack[[keepLayers]],
+                            maxDistance = P(sim)$maxDistance,
+                            params = P(sim),
+                            windDirStack = sim$windDirStack[[keepLayers]],
+                            windSpeedStack = sim$windSpeedStack[[keepLayers]],
+                            rasterToMatch = sim$rasterToMatch,
+                            # bgSettlingProp = P(sim)$bgSettlingProp,
+                            dispersalKernel = P(sim)$dispersalKernel,
+                            type = P(sim)$type,
+                            paths = paths(sim),
+                            figurePath = figurePath(sim),
+                            cores = cores,
+                            .runName = paste0(Par$.runName, "_", head(keepLayers, 1), "_", tail(keepLayers, 1)),
+                            # currentTime = time(sim),
+                            reqdPkgs = reqdPkgs(module = currentModule(sim),
+                                                modulePath = modulePath(sim))[[currentModule(sim)]]
+               )
+             })
+
 
            # sim <- dispersal(sim)
            # sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
@@ -884,7 +903,8 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                          rasterToMatch, maxDistance, # massAttacksRas,
                          params, #currentTime, bgSettlingProp,
                          type, reqdPkgs,
-                         windDirStack, windSpeedStack, dispersalKernel, paths, .runName) {
+                         windDirStack, windSpeedStack, dispersalKernel, paths, figurePath,
+                         cores, .runName) {
 
   # Make sure propPineRas is indeed a proportion
   mv <- maxFn(propPineRas)
@@ -899,30 +919,32 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   omitPastPines <- FALSE # was TRUE ... but maybe bad because there are many that have multiple years
   kern <- substr(tolower(dispersalKernel), start = 1, stop = 6)
   ll <- list()
-  maxMeanDist <- maxDistance
+  upper_meanDist <- maxDistance
+  upper_advectionMag <- 50
+  upper_sdDist <- 10
   pars <- switch(kern,
                  weibul = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist")])
                    ll$lower <- c(5000,  0.01,  0.01)
-                   ll$upper <- c(135000, 2000, 10.5) # changed Feb 21, 2025 Eliot: was 105000, 2000, 3.5
+                   ll$upper <- c(upper_meanDist, upper_advectionMag, upper_sdDist) # changed Feb 21, 2025 Eliot: was 105000, 2000, 3.5
                    ll
                  },
                  genera = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist", "p_nu")])#, "p_advectionDir")])
                    ll$lower <- c(5000,  0.01,  0.3, 0.5)
-                   ll$upper <- c(maxMeanDist, 2000, 10, 10)
+                   ll$upper <- c(upper_meanDist, upper_advectionMag, upper_sdDist, 10)
                    ll
                  },
                  expone = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag")])
                    ll$lower <- c(5000,  0.1)
-                   ll$upper <- c(maxMeanDist, 2000)
+                   ll$upper <- c(upper_meanDist, upper_advectionMag)
                    ll
                  },
                  twodt = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist")])
                    ll$lower <- c(5000,  0.1,  0.01)
-                   ll$upper <- c(maxMeanDist, 2000, 6.5)
+                   ll$upper <- c(upper_meanDist, upper_advectionMag, upper_sdDist)
                    ll
                  },
   )
@@ -951,12 +973,12 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
 
   if (any(type %in% c("DEoptim", "fit", "predict"))) {
 
-    ips <- c(rep("localhost", 6), # rep("n54", 8), rep("n14", 8), rep("n105", 8),
-             rep("n181", 22),
-             rep("n179", 22),
-             rep("n169", 50))
-    ips <- rep("n169", 30)
-    numCoresNeeded <- length(ips) # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
+    # ips <- c(rep("localhost", 6), # rep("n54", 8), rep("n14", 8), rep("n105", 8),
+    #          rep("n181", 22),
+    #          rep("n179", 22),
+    #          rep("n169", 50))
+    # ips <- rep("n169", 30)
+    numCoresNeeded <- length(cores) # This is one per true core on 4 machines, 56, 56, 28, 28 cores each
 
     # c("rgdal", "rgeos", "sf", "sp", "raster", "terra", "lwgeom")
     reqdPkgs <- unique(c("PredictiveEcology/SpaDES.tools@pointDistance2 (HEAD)", # "raster",
@@ -969,7 +991,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                          "terra", "lwgeom"))#,
     #reqdPkgs))
     control <- clusterSetup(messagePrefix = "MPB_",
-                            strategy = 3, itermax = 90, cores = ips, # logPath = file.path(dataPath(sim)),
+                            strategy = 3, itermax = 60, cores = cores, # logPath = file.path(dataPath(sim)),
                             libPath = libPaths[1],
                             logPath = file.path(paths$outputPath, "log"),
                             objsNeeded = objsToExport,
@@ -1045,12 +1067,11 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                           # doObjFunAssertions, Nreps, objFunCoresInternal, thresh, rep,
                                           .verbose = 1, .plots = Par$.plots,
                                           runName = .runName,
-                                          figurePath = file.path(paths$outputPath, "figures"), cachePath = paths$cachePath)
+                                          figurePath = figurePath, cachePath = paths$cachePath)
     # objsForDEoptim$fn(quotedSpread = quotedSpread, p = apply(cbind(lower, upper), 1, mean))
   }
   return(DEout)
 }
-#   browser()
 #   for (iter in seq(objsForDEoptim$control$itermax)) {
 #     objsForDEoptim$control$itermax <- 1
 #     DE[[iter]] <- Cache(
@@ -1096,13 +1117,10 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
 #   out <- objFun(quotedSpread = quotedSpread, # reps = 1,
 #                 p = pBest, objFunInner = objFunInner)#,
 #   #massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT)
-#   browser()
 #   fit_mpbSpreadOptimizer <- NULL
-#   browser()
 # } else if (any(type == "optim")) {
 #   # stop("This has not been maintained and appears to be not capable of estimating parameters")
 #   numCoresNeeded <- 5
-#   browser() # This next call has not been updated for clusters::clusterSetup
 #   cl <- clusterSetup(rep("localhost", numCoresNeeded), objsToExport = objsToExport,
 #                      reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = FALSE
 #   )
