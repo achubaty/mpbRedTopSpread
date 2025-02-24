@@ -30,13 +30,17 @@ objFun <- function(p, propPineRas,
     windSpeedStack <- get("windSpeedStack", envir = .GlobalEnv)
 
   allYears <- names(massAttacksStack)
-
   years <- data.frame(
     startYears = allYears[-length(allYears)],
     endYears = allYears[-1])
 
-  years <- years[years$startYears != "X2004", ] # has 1 origin pixel
+  sampleSizes <- massAttacksDT[, .N, by = "layerName"]
+  keepLayers <- sampleSizes$layerName[sampleSizes$N > 1]
+  years <- years[years$startYears %in% keepLayers & years$endYears %in% keepLayers,]
+  # years$startYears
+  # years <- years[years$startYears != "X2004", ] # has 1 origin pixel
   maxObjFunValIndiv <- -Inf
+
 
   outBig <- purrr::pmap(
     .l = years, # this creates startYears and endYears because it is a data.frame
