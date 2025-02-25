@@ -286,7 +286,8 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
              cores = Par$.coresList,
              mc.cores = length(Par$.coresList),
              mc.preschedule = FALSE,
-             function(lastYear, cores) {
+             MoreArgs = list(nams = nams),
+             function(lastYear, cores, nams) {
                Map(lastYearIndiv = lastYear, function(lastYearIndiv) {
                  keepLayers <- nams[seq(lastYearIndiv)]
                  dispersalFit(quotedSpread = quotedSpread,
@@ -309,6 +310,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                               reqdPkgs = reqdPkgs(module = currentModule(sim),
                                                   modulePath = modulePath(sim))[[currentModule(sim)]]
                  )
+                 print("Done ", lastYearIndiv)
                })
              })
 
