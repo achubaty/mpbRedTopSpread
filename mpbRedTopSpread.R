@@ -279,7 +279,6 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            halfSeq <- round(length(lastYearsToDo)/2)
            efficientSeq <- unique(c(head(lastYearsToDo, halfSeq), rev(tail(lastYearsToDo, halfSeq))))
            lastYearsToDoList <- suppressWarnings(split(efficientSeq, seq(nCores)))
-           browser()
            fitDateRanges <- mcmapply(
              SIMPLIFY = FALSE,
              lastYear = lastYearsToDoList,
