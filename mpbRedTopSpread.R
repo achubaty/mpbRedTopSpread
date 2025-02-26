@@ -289,6 +289,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
              function(lastYear, cores, nams) {
                Map(lastYearIndiv = lastYear, function(lastYearIndiv) {
                  keepLayers <- nams[seq(lastYearIndiv)]
+                 print(paste0("Starting ", tail(keepLayers, 1)))
                  dispersalFit(quotedSpread = quotedSpread,
                               propPineRas = sim$propPineRas, studyArea = sim$studyArea,
                               massAttacksDT = sim$massAttacksDT[layerName %in% keepLayers],
@@ -309,7 +310,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                               reqdPkgs = reqdPkgs(module = currentModule(sim),
                                                   modulePath = modulePath(sim))[[currentModule(sim)]]
                  )
-                 print("Done ", lastYearIndiv)
+                 print(paste0("Done ", tail(keepLayers, 1)))
                })
              })
 
@@ -953,6 +954,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                    ll
                  },
   )
+
   p <- pars$p
   lower <- pars$lower
   upper <- pars$upper
@@ -1013,7 +1015,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                            #"sp", "raster",
                            "terra", "lwgeom"))#,
       #reqdPkgs))
-      control <- clusterSetup(messagePrefix = "MPB_",
+      control <- clusterSetup(messagePrefix = .runName,
                               strategy = 3, itermax = 60, cores = cores, # logPath = file.path(dataPath(sim)),
                               libPath = libPaths[1],
                               logPath = file.path(paths$outputPath, "log"),
