@@ -126,6 +126,7 @@ defineModule(sim, list(
                  sourceURL = NA)
   ),
   outputObjects = bindrows(
+    createsOutput("climateSuitabilityMaps", "RasterStack", "A time series of climatic suitablity RasterLayers, each with previx 'X' and the year, e.g., 'X2010'"),
     createsOutput("cohortPixelDataMPBLost", "data.table",
                     paste("A `cohortPixelData`-like object, but with extra columns: ",
                           "numStems (the estimated number of stems of Pine), ",
@@ -134,6 +135,10 @@ defineModule(sim, list(
     createsOutput("massAttacksDT", "data.table", "Current MPB attack map (number of red attacked trees)."),
     createsOutput("massAttacksStack", "SpatRaster",
                   "This will be the same data as the inputted object, but will have a different resolution."),
+    createsOutput("windDirStack", "RasterStack",
+                  desc = "RasterStack of dominant wind direction maps for every location and year in the study area"),
+    createsOutput("windSpeedStack", "RasterStack",
+                  desc = "RasterStack of wind speed maps (km/h) for every location and year in the study area"),
     createsOutput("fit_mpbSpreadOptimizer", "list", "The output object from DEoptim"),
     createsOutput("propPineRas", "RasterLayer",
                   paste("Proportion (not percent) cover map of *all* pine. This will",
@@ -378,7 +383,6 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
     ## make coarser
     aggRTM <- raster::raster(sim$rasterToMatch)
     aggRTM <- raster::aggregate(aggRTM, fact = aggFact)
-    browser()
     aggRTM <- LandR::aggregateRasByDT(sim$rasterToMatch, aggRTM, fn = mean)
 
     dem <- Cache(prepInputsCanDEM,
@@ -926,24 +930,25 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   kern <- substr(tolower(dispersalKernel), start = 1, stop = 6)
   ll <- list()
   upper_meanDist <- maxDistance
-  upper_advectionMag <- 50
+  upper_advectionMag <- 500
+  lower_advectionMag <- 0.001
   upper_sdDist <- 10
   pars <- switch(kern,
                  weibul = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist")])
-                   ll$lower <- c(5000,  0.01,  0.01)
+                   ll$lower <- c(5000,  lower_advectionMag,  0.01)
                    ll$upper <- c(upper_meanDist, upper_advectionMag, upper_sdDist) # changed Feb 21, 2025 Eliot: was 105000, 2000, 3.5
                    ll
                  },
                  genera = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist", "p_nu")])#, "p_advectionDir")])
-                   ll$lower <- c(5000,  0.01,  0.3, 0.5)
+                   ll$lower <- c(5000,  lower_advectionMag,  0.3, 0.5)
                    ll$upper <- c(upper_meanDist, upper_advectionMag, upper_sdDist, 10)
                    ll
                  },
                  expone = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag")])
-                   ll$lower <- c(5000,  0.1)
+                   ll$lower <- c(5000,  lower_advectionMag)
                    ll$upper <- c(upper_meanDist, upper_advectionMag)
                    ll
                  },
@@ -1038,41 +1043,13 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
 
       stPre <- Sys.time()
       stFileName <- gsub(":", "-", format(stPre))
-      # customControls <- list(strategy = 2,
-      #                        itermax = 60,
-      #                        NP = numCoresNeeded)
-
 
       # This series of functions including the first "if" block below is to try to determine if
       #   the DEoptim needs rerunning. If it doesn't, then don't bother setting up cluster.
       # cacheID <- "34814d19554e3e4b" # This is manual override the DEoptim cache. Set to NULL if need to rerun.
       cacheID <- NULL
 
-      # control <- do.call(DEoptim.control, control)
-      # objsForDEoptim <- list(DEoptim, fn = objFun,
-      #                        lower = lower,#c(500, 1, -90, 0.9, 1.1, 5),
-      #                        upper = upper,#c(30000, 10, 240, 1.8, 1.6, 30),
-      #                        # reps = 1,
-      #                        quotedSpread = quotedSpread,
-      #                        control = do.call(DEoptim.control, control))
-      # dig <- Cache(CacheDigest, objsForDEoptim) # See if this has already been cached before
-      # if (!(isFALSE(attr(dig, ".Cache")$newCache && is.null(cacheID))) &&
-      #   isTRUE(type %in% c("DEoptim", "fit")) ) {
-      #
-      #   # cl <- clusters::clusterSetup(workers = ips, objsToExport = objsToExport,
-      #   #                           reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = 0, # fn = fn,
-      #   #                           quotedExtra = quote(install.packages(c("rgdal", "rgeos", "sf",
-      #   #                                                                  "sp", "raster", "terra", "lwgeom"),
-      #   #                                                                repos = "https://cran.rstudio.com")),
-      #   #                           numCoresNeeded = numCoresNeeded, adjustments = adjustments)
-      #   # on.exit(try(stopCluster(cl), silent = TRUE), add = TRUE)
-      #   # customControls$cl <- cl
-      #
-      #   message("Starting DEoptim")
-      # }
-
       # This is customized to work on both Linux and Windows
-
       control <- clusters:::controlSet(control)
 
       list2env(mget(objsToExport), envir = .GlobalEnv)
@@ -1093,7 +1070,6 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                                             .verbose = 1, .plots = Par$.plots,
                                             runName = .runName,
                                             figurePath = figurePath, cachePath = paths$cachePath)
-      # objsForDEoptim$fn(quotedSpread = quotedSpread, p = apply(cbind(lower, upper), 1, mean))
     } else {
       warning("Not enough data in ", paste0(allYears, collapse = ", "))
       DEout <- list()
@@ -1196,7 +1172,8 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYr
       windDir <- windDir[fromCell]
       windSpeed <- windSpeed[fromCell]
     }
-    advectionXY <- c(x = sin(rad(windDir))*p_advectionMag*windSpeed, y = cos(rad(windDir))*p_advectionMag*windSpeed)
+    advectionXY <- c(x = sin(rad(windDir))*p_advectionMag*windSpeed,
+                     y = cos(rad(windDir))*p_advectionMag*windSpeed)
     # The advection is pushing the things in a direction. We need to adjust the distance
     #   so that it is bigger or smaller, based on the
     x <- toXYs[, 'x'] - advectionXY[1]/p_meanDist*dist
