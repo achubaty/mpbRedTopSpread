@@ -88,11 +88,11 @@ defineModule(sim, list(
                     "This describes the interval between plot events."),
     defineParameter(".runName", "character", NULL, NA, NA,
                     "An optional name for a specific run."),
-    defineParameter(".coresList", "list", list(rep("localhost", parallel::detectCores()/2)), NA, NA,
+    defineParameter("coresListForFitting", "list", list(rep("localhost", parallel::detectCores()/2)), NA, NA,
                     "A list of cores for fitting such as `list(rep('localhost', 30), rep('n181', 30)`",
                     "Each element in the list should be 10x the number of parameters being estimated ",
                     "so, 30 for the kernels with 3 parameters. If the list is length >1, then it ",
-                    "will run fittings in parallel, with mc.cores = length(.coresList)"),
+                    "will run fittings in parallel, with mc.cores = length(coresListForFitting)"),
     defineParameter(".saveInitialTime", "numeric", NA, NA, NA,
                     "This describes the simulation time at which the first save event should occur"),
     defineParameter(".saveInterval", "numeric", NA, NA, NA,
@@ -280,20 +280,39 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            minNumYears <- length(nams) - 15 # just do some for now # x2020 is last; - 10 will be x2010 as first
            RNGkind("L'Ecuyer-CMRG")
            lastYearsToDo <- minNumYears:length(nams)
-           nCores <- length(Par$.coresList)
-           halfSeq <- round(length(lastYearsToDo)/2)
-           efficientSeq <- unique(c(head(lastYearsToDo, halfSeq), rev(tail(lastYearsToDo, halfSeq))))
-           lastYearsToDoList <- suppressWarnings(split(efficientSeq, seq(nCores)))
-           fitDateRanges <- mcmapply(
+           # lastYearsToDo <- 15
+           coresList <- Par$coresListForFitting
+           nCores <- length(coresList)
+           halfSeq <- ceiling(length(lastYearsToDo)/2)
+           lastYearEfficientSeq <- unique(c(head(lastYearsToDo, halfSeq), rev(tail(lastYearsToDo, halfSeq))))
+
+           firstYearEfficientSeq <- rep(1, length(lastYearsToDo))
+           # firstYearEfficientSeq <- lastYearsToDo - 1
+
+
+           lastYearsToDoList <- suppressWarnings(split(lastYearEfficientSeq, seq(nCores)))
+           firstYearsToDoList <- split(firstYearEfficientSeq, seq(nCores))
+           if (any(!is.na(coresList)) && length(coresList) > 0 && any(lengths(coresList))) {
+             parFun <- mcmapply
+             parArgs <- list(mc.cores = length(coresList),
+                             mc.preschedule = FALSE)
+           } else  {
+             parFun <- mapply
+             parArgs <- list()
+           }
+
+           parArgs <- append(parArgs, list(
              SIMPLIFY = FALSE,
              lastYear = lastYearsToDoList,
-             cores = Par$.coresList,
-             mc.cores = length(Par$.coresList),
-             mc.preschedule = FALSE,
+             firstYear = firstYearsToDoList,
+             cores = coresList,
              MoreArgs = list(nams = nams),
-             function(lastYear, cores, nams) {
-               Map(lastYearIndiv = lastYear, function(lastYearIndiv) {
-                 keepLayers <- nams[seq(lastYearIndiv)]
+             function(lastYear, firstYear, cores, nams) {
+               Map(lastYearIndiv = lastYear, firstYearIndiv = firstYear,
+                   function(lastYearIndiv, firstYearIndiv) {
+                 if (is.null(firstYearIndiv))
+                   firstYearIndiv <- 1
+                 keepLayers <- nams[seq(firstYearIndiv, lastYearIndiv)]
                  print(paste0("Starting ", tail(keepLayers, 1)))
                  dispersalFit(quotedSpread = quotedSpread,
                               propPineRas = sim$propPineRas, studyArea = sim$studyArea,
@@ -317,7 +336,41 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                  )
                  print(paste0("Done ", tail(keepLayers, 1)))
                })
-             })
+             }))
+           fitDateRanges <- do.call(parFun, parArgs)
+
+           # fitDateRanges <- mcmapply(
+           #   SIMPLIFY = FALSE,
+           #   lastYear = lastYearsToDoList,
+           #   cores = coresList,
+           #   MoreArgs = list(nams = nams),
+           #   function(lastYear, cores, nams) {
+           #     Map(lastYearIndiv = lastYear, function(lastYearIndiv) {
+           #       keepLayers <- nams[seq(lastYearIndiv)]
+           #       print(paste0("Starting ", tail(keepLayers, 1)))
+           #       dispersalFit(quotedSpread = quotedSpread,
+           #                    propPineRas = sim$propPineRas, studyArea = sim$studyArea,
+           #                    massAttacksDT = sim$massAttacksDT[layerName %in% keepLayers],
+           #                    massAttacksStack = sim$massAttacksStack[[keepLayers]],
+           #                    maxDistance = P(sim)$maxDistance,
+           #                    params = P(sim),
+           #                    windDirStack = sim$windDirStack[[keepLayers]],
+           #                    windSpeedStack = sim$windSpeedStack[[keepLayers]],
+           #                    rasterToMatch = sim$rasterToMatch,
+           #                    # bgSettlingProp = P(sim)$bgSettlingProp,
+           #                    dispersalKernel = P(sim)$dispersalKernel,
+           #                    type = P(sim)$type,
+           #                    paths = paths(sim),
+           #                    figurePath = figurePath(sim),
+           #                    cores = cores,
+           #                    .runName = paste0(Par$.runName, "_", head(keepLayers, 1), "_", tail(keepLayers, 1)),
+           #                    # currentTime = time(sim),
+           #                    reqdPkgs = reqdPkgs(module = currentModule(sim),
+           #                                        modulePath = modulePath(sim))[[currentModule(sim)]]
+           #       )
+           #       print(paste0("Done ", tail(keepLayers, 1)))
+           #     })
+           #   })
 
 
            # sim <- dispersal(sim)
@@ -916,6 +969,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
                          windDirStack, windSpeedStack, dispersalKernel, paths, figurePath,
                          cores, .runName) {
 
+  if (isTRUE(any(is.na(cores)))) cores <- NULL
   # Make sure propPineRas is indeed a proportion
   mv <- maxFn(propPineRas)
   if (mv > 1)
@@ -930,9 +984,9 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   kern <- substr(tolower(dispersalKernel), start = 1, stop = 6)
   ll <- list()
   upper_meanDist <- maxDistance
-  upper_advectionMag <- 500
-  lower_advectionMag <- 0.001
-  upper_sdDist <- 10
+  upper_advectionMag <- 50000
+  lower_advectionMag <- 100
+  upper_sdDist <- 100
   pars <- switch(kern,
                  weibul = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist")])
@@ -1052,6 +1106,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
       # This is customized to work on both Linux and Windows
       control <- clusters:::controlSet(control)
 
+      # send objects to .GlobalEnv where the objFun will look for them
       list2env(mget(objsToExport), envir = .GlobalEnv)
       on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
 

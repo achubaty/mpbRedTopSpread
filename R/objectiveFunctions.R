@@ -41,7 +41,6 @@ objFun <- function(p, propPineRas,
   # years <- years[years$startYears != "X2004", ] # has 1 origin pixel
   maxObjFunValIndiv <- -Inf
 
-
   outBig <- purrr::pmap(
     .l = years, # this creates startYears and endYears because it is a data.frame
     massAttacksStack = massAttacksStack,
