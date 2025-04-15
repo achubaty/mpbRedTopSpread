@@ -21,6 +21,7 @@ defineModule(sim, list(
                   "BioSIM", ##  ## not on CRAN/GitHub; see install info at top of this file
                   "CircStats", "data.table", "DEoptim", "EnvStats",
                   "gamlss", "ggplot2", "gt",
+                  "KevanRastello/MPBforecasting@main",
                   "PredictiveEcology/clusters@main",
                   "PredictiveEcology/SpaDES.core@development (>= 1.0.8.9011)",
                   "PredictiveEcology/LandR@development (>= 1.0.7.9007)",
@@ -51,7 +52,7 @@ defineModule(sim, list(
                           "is available to be attacked during predict mode.")),
     defineParameter("minAgeForMPB", "numeric", 40, NA, NA,
                     "The minimum age of tree that a MPB will attack a tree during epidemic phase."),
-    defineParameter("maxDistance", "numeric", 3.4e5, NA, NA,
+    defineParameter("maxDistance", "numeric", 5.4e5, NA, NA,
                     "The maximum distance to allow for pair-wise from-to dispersal pairs."),
     defineParameter("quotedSpread", c("language"), NULL, NA, NA,
                     paste("A spread function that is contained within a `quote()`.",
@@ -115,12 +116,12 @@ defineModule(sim, list(
                  "Percent cover maps by species (lodgepole and jack pine).", sourceURL = NA),
     expectsInput("rasterToMatch", "RasterLayer",
                  "template raster for GIS operations.", sourceURL = NA),
-    expectsInput("standAgeMap", "RasterLayer",
-                 "stand age map in study area, default is Canada national stand age map",
-                 sourceURL = paste0("http://ftp.maps.canada.ca/pub/nrcan_rncan/Forests_Foret/",
-                                    "canada-forests-attributes_attributs-forests-canada/",
-                                    "2001-attributes_attributs-2001/",
-                                    "NFI_MODIS250m_2001_kNN_Structure_Stand_Age_v1.tif")),
+    # expectsInput("standAgeMap", "RasterLayer",
+    #              "stand age map in study area, default is Canada national stand age map",
+    #              sourceURL = paste0("http://ftp.maps.canada.ca/pub/nrcan_rncan/Forests_Foret/",
+    #                                 "canada-forests-attributes_attributs-forests-canada/",
+    #                                 "2001-attributes_attributs-2001/",
+    #                                 "NFI_MODIS250m_2001_kNN_Structure_Stand_Age_v1.tif")),
     expectsInput("windDirStack", "SpatRaster",
                  "SpatRaster of wind maps for every location in the study area",
                  sourceURL = NA)
@@ -148,6 +149,9 @@ defineModule(sim, list(
     createsOutput("thresholdAttackTreesMinDetectable", "numeric",
                   paste("The number of predicted attacks (post dispersal) per pixel below which ",
                         "it can be considered 'no attack'")),
+    createsOutput("validationExperiment", "data.table", "The collection of forecasting validation to run"),
+    createsOutput("yearsAndLayerNames", "data.table", "Two columns: years, nams, which ",
+                  "indicate which years are in the data and their names in the sim$massAttacksStack"),
     createsOutput("ROCList", "list", "") ## TODO: DESCRIPTION NEEDED
   )
 ))
@@ -171,7 +175,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
              sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "validate", 4.5)
            }
            if (isTRUE(any(c("predict", "all") %in% P(sim)$type))) { # will automatically validate
-             sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalFit", eventPriority = 3.5) # need to run fit or get Cached object
+             # sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "dispersalFit", eventPriority = 3.5) # need to run fit or get Cached object
              sim <- scheduleEvent(sim, time(sim), "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
              sim <- scheduleEvent(sim, end(sim), "mpbRedTopSpread", "validate", 7)
            } else if (isTRUE(any(c("validateAll") %in% P(sim)$type))) {
@@ -183,17 +187,16 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
          },
          "growMultiYear" = {
            sim$massAttacksDT <- grow(sim$massAttacksDT, P(sim)$dataset,
-                                     sim$massAttacksStack, mod$growthData)
+                                     mod$HaPerPixel, mod$growthData)
          },
          "growPredict" = {
+           browser()
            if (is.null(sim$fit_mpbSpreadOptimizer)) {
-             browser() # This should no longer be necessary -- it will run the DEoptim and pull from Cache
              message("A fit_mpbSpreadOptimizer object should probably be supplied")
-             optimOutFileList <- dir(outputPath(sim), pattern = "optimOut", full.names = TRUE)
-             sim$fit_mpbSpreadOptimizer <- readRDS(optimOutFileList[[3]])
-             DEoutFileList <- dir(outputPath(sim), pattern = "fit_mpbSpreadOptimizer", full.names = TRUE)
-             sim$fit_mpbSpreadOptimizer <- readRDS(DEoutFileList[[23]])
-             sim$fit_mpbSpreadOptimizer <- colnamesToDEout(sim$fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist"))
+             optimOutFileList <- dir(outputPath(sim), pattern = "DE", recursive = TRUE, full.names = TRUE)
+             DEout <- readRDS(optimOutFileList[[3]])
+             DEout <- unlist(DEout, recursive = FALSE)
+             sim$fit_mpbSpreadOptimizer <- tail(DEout[[1]], 1)$member$bestmemit
            }
 
            if (!is.null(sim$cohortData)) {
@@ -203,14 +206,15 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
              sim$propPineRas <- raster::raster(propPineRas)
            }
 
-           sim$massAttacksDT_1Yr <- growPredict(sim)
+           browser()
+           sim$massAttacksDT_t0_1Yr <- growPredict(sim)
            message("Estimated ",
-                   format(scientific = TRUE, round(sum(sim$massAttacksDT_1Yr$greenTreesYr_t, na.rm = TRUE), 0)),
+                   format(scientific = TRUE, round(sum(sim$massAttacksDT_t0_1Yr$greenTreesYr_t, na.rm = TRUE), 0)),
                    " source trees ", "in year ", time(sim) + 1)
 
            if (anyPlotting(Par$.plots)) {
              title <- paste0("Predicted Attack vs. Current Attack, prior to dispersal, year ", time(sim))
-             Plots(fn = plot_atkYearByYearPlus1, maDT = sim$massAttacksDT_1Yr, title = title, type = "screen", usePlot = FALSE,
+             Plots(fn = plot_atkYearByYearPlus1, maDT = sim$massAttacksDT_t0_1Yr, title = title, type = "screen", usePlot = FALSE,
                    filename = file.path(outputPath(sim), "figures", paste0(title)))
            }
 
@@ -275,106 +279,7 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
            sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "growPredict", eventPriority = 5.5)
          },
          "dispersalFit" = {
-           quotedSpread <- getQuotedSpread(Par$dispersalKernel)
-           nams <- names(sim$massAttacksStack)
-           minNumYears <- length(nams) - 15 # just do some for now # x2020 is last; - 10 will be x2010 as first
-           RNGkind("L'Ecuyer-CMRG")
-           lastYearsToDo <- minNumYears:length(nams)
-           # lastYearsToDo <- 15
-           coresList <- Par$coresListForFitting
-           nCores <- length(coresList)
-           halfSeq <- ceiling(length(lastYearsToDo)/2)
-           lastYearEfficientSeq <- unique(c(head(lastYearsToDo, halfSeq), rev(tail(lastYearsToDo, halfSeq))))
-
-           firstYearEfficientSeq <- rep(1, length(lastYearsToDo))
-           # firstYearEfficientSeq <- lastYearsToDo - 1
-
-
-           lastYearsToDoList <- suppressWarnings(split(lastYearEfficientSeq, seq(nCores)))
-           firstYearsToDoList <- split(firstYearEfficientSeq, seq(nCores))
-           if (any(!is.na(coresList)) && length(coresList) > 0 && any(lengths(coresList))) {
-             parFun <- mcmapply
-             parArgs <- list(mc.cores = length(coresList),
-                             mc.preschedule = FALSE)
-           } else  {
-             parFun <- mapply
-             parArgs <- list()
-           }
-
-           parArgs <- append(parArgs, list(
-             SIMPLIFY = FALSE,
-             lastYear = lastYearsToDoList,
-             firstYear = firstYearsToDoList,
-             cores = coresList,
-             MoreArgs = list(nams = nams),
-             function(lastYear, firstYear, cores, nams) {
-               Map(lastYearIndiv = lastYear, firstYearIndiv = firstYear,
-                   function(lastYearIndiv, firstYearIndiv) {
-                 if (is.null(firstYearIndiv))
-                   firstYearIndiv <- 1
-                 keepLayers <- nams[seq(firstYearIndiv, lastYearIndiv)]
-                 print(paste0("Starting ", tail(keepLayers, 1)))
-                 dispersalFit(quotedSpread = quotedSpread,
-                              propPineRas = sim$propPineRas, studyArea = sim$studyArea,
-                              massAttacksDT = sim$massAttacksDT[layerName %in% keepLayers],
-                              massAttacksStack = sim$massAttacksStack[[keepLayers]],
-                              maxDistance = P(sim)$maxDistance,
-                              params = P(sim),
-                              windDirStack = sim$windDirStack[[keepLayers]],
-                              windSpeedStack = sim$windSpeedStack[[keepLayers]],
-                              rasterToMatch = sim$rasterToMatch,
-                              # bgSettlingProp = P(sim)$bgSettlingProp,
-                              dispersalKernel = P(sim)$dispersalKernel,
-                              type = P(sim)$type,
-                              paths = paths(sim),
-                              figurePath = figurePath(sim),
-                              cores = cores,
-                              .runName = paste0(Par$.runName, "_", head(keepLayers, 1), "_", tail(keepLayers, 1)),
-                              # currentTime = time(sim),
-                              reqdPkgs = reqdPkgs(module = currentModule(sim),
-                                                  modulePath = modulePath(sim))[[currentModule(sim)]]
-                 )
-                 print(paste0("Done ", tail(keepLayers, 1)))
-               })
-             }))
-           fitDateRanges <- do.call(parFun, parArgs)
-
-           # fitDateRanges <- mcmapply(
-           #   SIMPLIFY = FALSE,
-           #   lastYear = lastYearsToDoList,
-           #   cores = coresList,
-           #   MoreArgs = list(nams = nams),
-           #   function(lastYear, cores, nams) {
-           #     Map(lastYearIndiv = lastYear, function(lastYearIndiv) {
-           #       keepLayers <- nams[seq(lastYearIndiv)]
-           #       print(paste0("Starting ", tail(keepLayers, 1)))
-           #       dispersalFit(quotedSpread = quotedSpread,
-           #                    propPineRas = sim$propPineRas, studyArea = sim$studyArea,
-           #                    massAttacksDT = sim$massAttacksDT[layerName %in% keepLayers],
-           #                    massAttacksStack = sim$massAttacksStack[[keepLayers]],
-           #                    maxDistance = P(sim)$maxDistance,
-           #                    params = P(sim),
-           #                    windDirStack = sim$windDirStack[[keepLayers]],
-           #                    windSpeedStack = sim$windSpeedStack[[keepLayers]],
-           #                    rasterToMatch = sim$rasterToMatch,
-           #                    # bgSettlingProp = P(sim)$bgSettlingProp,
-           #                    dispersalKernel = P(sim)$dispersalKernel,
-           #                    type = P(sim)$type,
-           #                    paths = paths(sim),
-           #                    figurePath = figurePath(sim),
-           #                    cores = cores,
-           #                    .runName = paste0(Par$.runName, "_", head(keepLayers, 1), "_", tail(keepLayers, 1)),
-           #                    # currentTime = time(sim),
-           #                    reqdPkgs = reqdPkgs(module = currentModule(sim),
-           #                                        modulePath = modulePath(sim))[[currentModule(sim)]]
-           #       )
-           #       print(paste0("Done ", tail(keepLayers, 1)))
-           #     })
-           #   })
-
-
-           # sim <- dispersal(sim)
-           # sim <- scheduleEvent(sim, time(sim) + 1, "mpbRedTopSpread", "dispersal", eventPriority = 5.5)
+           sim <- dispersalFit(sim)
          },
          "validate" = {
            sim <- Validate(sim)
@@ -387,6 +292,117 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
                        "' in module '", events(sim)[1, "moduleName", with = FALSE], "'", sep = ""))
   )
   return(invisible(sim))
+}
+
+dispersalFit <- function(sim) {
+  browser()
+
+  # For non-parallel, uncomment this
+  # Par$coresListForFitting <- list(localhost = NA)
+
+  quotedSpread <- getQuotedSpread(Par$dispersalKernel) # need this here, in case source code was updated
+
+  # namsForClimate <- names(sim$windDirStack)
+  # yearsForClimate <- gsub("[[:alpha:]]*", "", namsForClimate) |> as.integer()
+  # yearsAndNamesForClimate <- data.table(years = yearsForClimate, nams = namsForClimate)
+
+  # dataForMPBexpt <- data.frame(Year = mod$yearsAndLayerNames$years, Infestations = 1)
+  # sim$validationExperiment <- MPBforecasting::generate_NYearsTraining_ForecastingHorizon(
+  #   dataForMPBexpt,
+  #   NYearsTraining = c(1, 2, 3, 5),
+  #   ForecastHorizons = c(1, 2, 5, 10),
+  #   AllAvailableHistory = TRUE) |> as.data.table()
+  # sim$validationExperiment <- sim$validationExperiment[StartTrainingYear != EndTrainingYear]
+  modelsToRun <- sim$validationExperiment[ModelToFit == 1]
+  allYears <- yearsCreateDT(modelsToRun,
+                            yearsAndNams = mod$yearsAndLayerNames,
+                            yearsAndNamesForClimate = mod$yearsAndNamesForClimate)
+
+  # allYears <- modelsToRun[, .(t0Num = StartTrainingYear, t1Num = EndTrainingYear)]
+  # allYears[ , t0 := mod$yearsAndLayerNames$nams[match(allYears$t0Num, mod$yearsAndLayerNames$years)], ]
+  # allYears[ , tEnd := mod$yearsAndLayerNames$nams[match(allYears$t1Num, mod$yearsAndLayerNames$years)], ]
+  # allYears[ , tEnd := mod$yearsAndLayerNames$nams[match(allYears$t1Num, mod$yearsAndLayerNames$years)], ]
+  # allYears[ , tminus1 := yearsAndNamesForClimate$nams[match(allYears$t0Num - 1, yearsAndNamesForClimate$years)], ]
+  # allYears <- na.omit(allYears)
+  # stopifnot(all(allYears$t1Num == as.integer(gsub("X", "", allYears$tEnd))))
+  # stopifnot(all(allYears$t0Num == as.integer(gsub("X", "", allYears$t0))))
+  # set(allYears, NULL, c("t1Num", "t0Num"), NULL)
+
+  RNGkind("L'Ecuyer-CMRG")
+  coresList <- Par$coresListForFitting
+  coresForDF <- rep(names(coresList), length.out = NROW(allYears))
+  allYears[, coresId := coresForDF]
+
+  # To run just a subset of the allYears
+  # allYears <- allYears[grep("2009", t0)][1, ]
+
+  parFun <- setupParFun(coresList)
+  # if (any(!is.na(coresList)) && length(coresList) > 0 && any(lengths(coresList))) {
+  #   parFun <- mcmapply
+  #   opts <- options("mc.cores" = length(coresList))
+  #   on.exit(options(opts), add = TRUE)
+  #   parArgs <- list(# mc.cores = length(coresList),
+  #     mc.preschedule = FALSE)
+  # } else  {
+  #   parFun <- mapply
+  #   parArgs <- list()
+  # }
+
+  dig <- CacheDigest(list(sim$windDirStack, sim$propPineRas,
+                          sim$windSpeedStack, sim$rasterToMatch,
+                          sim$massAttacksStack))
+
+  allYearsList <- split(allYears, by = "coresId")
+  fitdataRanges <- parFun(
+    allYearsList,
+    # mc.cores = length(allYearsList),
+    # mc.preschedule = FALSE, # Because there are exactly the number as there are elements in list, this is irrelevant
+    FUN = function(allYears) { #}, idOuter) {
+      outs <- list() # collect outputs
+      dfList <- purrr::pmap(allYears, coresList = coresList, # id = seq_along(coresList),
+                  function(t0, tEnd, tminus1, coresId, coresList) {
+                    cores = coresList[[coresId]]
+                    endYearForClimate <- grep(t0, namsForClimate) - 1
+                    keepLayers <- mod$yearsAndLayerNames$nams[grep(t0, mod$yearsAndLayerNames$nams):grep(tEnd, mod$yearsAndLayerNames$nams)]
+                    keepLayersClimate <- namsForClimate[grep(tminus1, namsForClimate):endYearForClimate]
+
+                    start <- head(keepLayers, 1)
+                    end <- tail(keepLayers, 1)
+                    doing <- paste0(start, " to ", end)
+                    print(paste0("Starting ", doing))
+                    df <- dispersalFitIndiv(quotedSpread = quotedSpread,
+                                       propPineRas = sim$propPineRas, studyArea = sim$studyArea,
+                                       massAttacksDT = sim$massAttacksDT[layerName %in% keepLayers],
+                                       massAttacksStack = sim$massAttacksStack[[keepLayers]],
+                                       maxDistance = P(sim)$maxDistance,
+                                       params = P(sim),
+                                       windDirStack = sim$windDirStack[[keepLayersClimate]],
+                                       windSpeedStack = sim$windSpeedStack[[keepLayersClimate]],
+                                       rasterToMatch = sim$rasterToMatch,
+                                       # bgSettlingProp = P(sim)$bgSettlingProp,
+                                       dispersalKernel = P(sim)$dispersalKernel,
+                                       type = P(sim)$type,
+                                       paths = paths(sim),
+                                       figurePath = figurePath(sim),
+                                       cores = cores,
+                                       .runName = paste0(Par$.runName, "_", head(keepLayers, 1), "_", tail(keepLayers, 1)),
+                                       # currentTime = time(sim),
+                                       reqdPkgs = reqdPkgs(module = currentModule(sim),
+                                                           modulePath = modulePath(sim))[[currentModule(sim)]]
+                    ) |> Cache(.cacheExtra = list(keepLayers, dig),
+                               omitArgs = c("rasterToMatch", "propPinRas", "massAttacksDT", "windDirStack", "windSpeedStack", "massAttacksStack", "massAttacksDT", "cores"))
+                    outs[[as.numeric(coresId)]] <- df
+                    DEoutputFilename <- file.path(basename(outputPath(sim)), currentModule(sim), DEobjsDir,
+                                                  paste0(paste("DE", Par$.runName, start, end,round(Sys.time(), 0), sep = "_"), ".rds"))
+                    messageColoured("Saving DE outputs to: ", DEoutputFilename, colour = "yellow")
+                    dir.create(dirname(DEoutputFilename), recursive = TRUE, showWarnings = FALSE)
+                    saveRDS(outs, file = DEoutputFilename)
+                    print(paste0("Done ", doing))
+                    df
+                  })
+    })
+  stop()
+  sim
 }
 
 .inputObjects <- function(sim) {
@@ -418,50 +434,21 @@ doEvent.mpbRedTopSpread <- function(sim, eventTime, eventType, debug = FALSE) {
   }
 
   ## stand age map
-  if (!suppliedElsewhere("standAgeMap", sim)) {
-    sim$standAgeMap <- LandR::prepInputsStandAgeMap(
-      startTime = 2010,
-      ageUrl = na.omit(extractURL("standAgeMap")),
-      destinationPath = dPath,
-      studyArea = sim$studyArea,
-      rasterToMatch = sim$rasterToMatch,
-      userTags = c("stable", currentModule(sim)) ## TODO: does this need rasterToMatch? it IS rtm!
-    )
-    sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
-  }
+  # if (!suppliedElsewhere("standAgeMap", sim)) {
+  #   sim$standAgeMap <- LandR::prepInputsStandAgeMap(
+  #     startTime = 2010,
+  #     ageUrl = na.omit(extractURL("standAgeMap")),
+  #     destinationPath = dPath,
+  #     studyArea = sim$studyArea,
+  #     rasterToMatch = sim$rasterToMatch,
+  #     userTags = c("stable", currentModule(sim)) ## TODO: does this need rasterToMatch? it IS rtm!
+  #   )
+  #   sim$standAgeMap[] <- asInteger(sim$standAgeMap[])
+  # }
 
   if (!suppliedElsewhere("windDirStack", sim)) {
-    aggFact <- P(sim)$aggFact
-
-    ## make coarser
-    aggRTM <- raster::raster(sim$rasterToMatch)
-    aggRTM <- raster::aggregate(aggRTM, fact = aggFact)
-    aggRTM <- LandR::aggregateRasByDT(sim$rasterToMatch, aggRTM, fn = mean)
-
-    dem <- Cache(prepInputsCanDEM,
-                 studyArea = sim$studyArea,
-                 rasterToMatch = aggRTM,
-                 destinationPath = inputPath(sim))
-
-    ## TODO: using "ClimaticWind_Annual"; use mean wind for summer [flight] months only
-    windStk <- LandR::BioSIM_getWind(
-      dem = dem,
-      years = P(sim)$years,
-      climModel = P(sim)$climateModel,
-      rcp = P(sim)$climateScenario
-    )
-
-    windDirStack <- disaggregate(windStk, fact = aggFact)
-    sim$windDirStack <- raster::stack(crop(windDirStack, sim$rasterToMatch))  ## TODO: speed and dir??
-
-    if (!compareRaster(sim$windDirStack, sim$rasterToMatch, stopiffalse = FALSE)) {
-      warning("wind raster is not same resolution as sim$rasterToMatch; please debug")
-      browser() ## TODO: remove
-    }
-
+    stop("Please use mpbClimateData module")
   }
-
-  # P(sim)$quotedSpread <- getQuotedSpread(kernel = Par$dispersalKernel)
 
   if (!suppliedElsewhere("columnsForPixelGroups", sim)) {
     sim$columnsForPixelGroups <- LandR::columnsForPixelGroups
@@ -494,22 +481,12 @@ Init <- function(sim) {
     sim$pineMap[]
   }
 
-  nas <- is.na(propPineRas[])# & !is.na(rasterToMatch[])
+  nas <- is.na(propPineRas[])
   propPineRas[nas] <- 0
 
   nams <- names(sim$massAttacksStack)
   rasCoarse <- coarseRaster(sim$massAttacksStack)
 
-
-  # massAttacksList <- raster::unstack(sim$massAttacksStack)
-  #opts <- options(reproducible.cacheSpeed = "fast")
-  #on.exit(options(opts))
-  #mams <- raster::stack(
-  #  Cache(lapply, massAttacksList, function(mam)
-  #    aggregateRasByDT(mam, rasCoarse, fn = sum))
-  #)
-  #names(mams) <- names(sim$massAttacksStack)
-  #sim$massAttacksStack <- mams
   resRatio <- res(rasCoarse)[1]/res(sim$climateSuitabilityMaps)[1]
   sim$massAttacksStack <- Cache(terra::aggregate, sim$massAttacksStack,
                                 res(rasCoarse)[1]/res(sim$massAttacksStack)[1],
@@ -526,16 +503,13 @@ Init <- function(sim) {
   sim$climateSuitabilityMaps <- Cache(aggregate, sim$climateSuitabilityMaps,
                                       res(rasCoarse)[1]/res(sim$climateSuitabilityMaps)[1],
                                       fun = "mean", na.rm = TRUE)
-  # if (resRatio < 1) {
-  #   # climateSuitabilityMaps <- Cache(disaggregate, sim$climateSuitabilityMaps, fact = 10)
-  #   climateSuitabilityMaps <- terra:::project(sim$climateSuitabilityMaps, terra::rast(sim$massAttacksStack))
-  #   sim$climateSuitabilityMaps <- climateSuitabilityMaps
-  # }
   terra::compareGeom(sim$massAttacksStack,
                      sim$propPineRas,
                      sim$windDirStack,
                      sim$windSpeedStack,
                      sim$climateSuitabilityMaps)
+
+  mod$HaPerPixel <- prod(res(sim$massAttacksStack)) / 1e4
 
   # options(opts)
   ## create a data.table consisting of the reduced map of current MPB distribution,
@@ -596,20 +570,59 @@ Init <- function(sim) {
            }
     )
 
+  mod$yearsAndLayerNames <- yearsAndLayerNames(sim$massAttacksDT)
+  mod$yearsAndNamesForClimate <- yearsAndNamesForClimate(sim$windDirStack)
+
+
+  dataForMPBexpt <- data.frame(Year = mod$yearsAndLayerNames$years, Infestations = 1)
+  sim$validationExperiment <- MPBforecasting::generate_NYearsTraining_ForecastingHorizon(
+    dataForMPBexpt,
+    NYearsTraining = c(1, 2, 3, 5),
+    ForecastHorizons = c(1, 2, 5, 10),
+    AllAvailableHistory = TRUE) |> as.data.table()
+  sim$validationExperiment <- sim$validationExperiment[StartTrainingYear != EndTrainingYear]
+  set(sim$validationExperiment, NULL, "startEndConcatenate",
+      paste0(sim$validationExperiment$StartTrainingYear, "_", sim$validationExperiment$EndTrainingYear))
+  sim$validationExperiment[, , by = "startEndConcatenate"]
+
+
   return(invisible(sim))
 }
 
-dispersalPredict <- function(sim) {
-  pBest <- sim$fit_mpbSpreadOptimizer$optim$bestmem
+dispersalPredict <- function(sim, pBest) {
+  browser()
+  if (missing(pBest))
+    pBest <- sim$fit_mpbSpreadOptimizer$optim$bestmem
 
   if (is.null(sim$thresholdAttackTreesMinDetectable)) {
     sim$thresholdAttackTreesMinDetectable <- 1.4
   }
   quotedSpread <- getQuotedSpread(kernel = Par$dispersalKernel)
 
+  layerNames <- unique(massAttacksDT$layerName)
+  layerName1 <- grep(t0, layerNames, value = TRUE)
+
+  massAttacksDTThisYr <- massAttacksDT[layerName %in% layerName1]
+  # rasterTemplate <- rast(massAttacksStack[[t0]])
+  massAttackRasStart <- rasterTemplate
+  massAttackRasStart[massAttacksDTThisYr$pixel] <- massAttacksDTThisYr$greenTreesYr_t # note green trees
+  totalPropaguleNumber <- sum(massAttacksDTThisYr$greenTreesYr_t)
+  starts <- which(massAttackRasStart[] > 0)
+  windDirRas <- windDirStack[[tminus1]]
+  windSpeedRas <- windSpeedStack[[tminus1]]
+
+  # tEnd
+  madtTend <- massAttacksDT[layerName %in% tEnd]# $ATKTREES
+  whPixelsNextYear <- madtTend$pixel
+  ATKTREESNextYear <- madtTend$ATKTREES
+  # atksRasNextYr <- massAttacksStack[[tEnd]]
+  # }
+  # wh <- which(atksRasNextYr[] > 0)
+  # atksKnownNextYr <- setDT(list(pixels = whPixelsNextYear, ATKTREES = ATKTREESNextYear))
+  toCells <- whPixelsNextYear
+
   predictedDT <- predictQuotedSpread(
-    showSimilar = FALSE, # a bug in the database -- remove this
-    massAttacksDT = sim$massAttacksDT_1Yr,
+    massAttacksDT = sim$massAttacksDT_t0_1Yr,
     windDirStack = sim$windDirStack,
     windSpeedStack = sim$windSpeedStack,
     propPineRas = sim$propPineRas,
@@ -631,6 +644,100 @@ dispersalPredict <- function(sim) {
 
 #' Validate is expecting many years in the massAttacksDT, so it not appropriate for 1 year at a time
 Validate <- function(sim) {
+  # message("A fit_mpbSpreadOptimizer object should probably be supplied")
+
+  optimOutFileDir <- dir(outputPath(sim), pattern = DEobjsDir, include.dirs = TRUE, recursive = TRUE, full.names = TRUE)
+  optimOutFileList <- dir(optimOutFileDir, pattern = paste0(.runName), full.names  = TRUE)
+  nams <- names(sim$massAttacksStack)
+  namsGrep <- paste(nams, collapse = "|")
+
+  veColnames <- colnames(sim$validationExperiment)
+  startNam <- grep("Start", veColnames, value = TRUE)
+  endNam <- grep("End", veColnames, value = TRUE)
+
+  namLabels <- c("startLabel", "endLabel")
+  startEndNamRequired <- c("StartTrainingYear", "EndTrainingYear")
+  startEndNam <- c(startNam, endNam)
+  if (!all(startEndNam == startEndNamRequired)) {
+    setnames(sim$validationExperiment, old = startEndName, new = startEndNamRequired)
+  }
+
+  yearRanges <- gsub(paste0("^.+(",namsGrep,")\\_(", namsGrep, ")+.+.rds"), "\\1_\\2", optimOutFileList)
+  yearRanges <- as.data.table(do.call(rbind, strsplit(yearRanges, split = "_"))) |> setnames(new = namLabels)
+  for (namId in seq(startEndNam))
+    set(yearRanges, NULL, startEndNam[namId], as.integer(gsub("[[:alpha:]]+", "", yearRanges[[namLabels[namId]]])))
+  set(yearRanges, NULL, "file", optimOutFileList)
+
+  validationExperiment <- yearRanges[sim$validationExperiment, on = startEndNam, nomatch = NA]
+  colsToKeep <- c(namLabels, "file", "PredictedYear", startEndNam)
+  objsToExport <- formalArgs("objFun")
+
+  quotedSpread <- getQuotedSpread(kernel = Par$dispersalKernel)
+  # dt <- list()
+  digs <- CacheDigest(list(propPineRas, format(quotedSpread), # tminus1Nam,
+                           sim$climateSuitabilityMaps,
+                           sim$windDirStack, sim$windSpeedStack, sim$massAttacksDT,
+                           rasTemplate))$outputHash
+
+
+  cfp <- if (length(Par$coresForPrediction) == 1)
+    rep(Par$coresForPrediction, Par$coresForPrediction) else Par$coresForPrediction
+  parFun <- setupParFun(cfp)
+  # if (any(!is.na(cfp)) && length(cfp) > 0 && any(lengths(cfp))) {
+  #   parFun <- mcmapply
+  #   opts <- options("mc.cores" = length(coresList))
+  #   on.exit(options(opts), add = TRUE)
+  #   # parArgs <- list(# mc.cores = length(coresList),
+  #   #   mc.preschedule = FALSE)
+  # } else  {
+  #   parFun <- mapply
+  #   # parArgs <- list()
+  # }
+  ve <- validationExperiment[, ..colsToKeep]
+  ve <- na.omit(ve)
+  outs <- parFun(rownum = seq_len(NROW(ve)),
+           function(rownum) {
+             list2env(ve[rownum,], environment()) # startLabel, endLabel, file, PredictedYear, StartTrainingYear, EndTrainingYear
+             Sys.sleep(runif(1, 0, 10)) # for parallel runs
+
+             # function(startLabel, endLabel, file, PredictedYear, StartTrainingYear, EndTrainingYear) {
+             predictInner(file, objsToExport, simLs = ls(sim), simEnvir = envir(sim),
+                          EndTrainingYear = EndTrainingYear, PredictedYear = PredictedYear,
+                          StartTrainingYear = StartTrainingYear, endLabel = endLabel, startLabel = startLabel,
+                          massAttacksDT = sim$massAttacksDT, massAttacksStack = sim$massAttacksStack,
+                          quotedSpread = quotedSpread, # windStacksDig = windStacksDig,
+                          windDirStack = sim$windDirStack, windSpeedStack = sim$windSpeedStack,
+                          propPineRas = sim$propPineRas, climateSuitabilityMaps = sim$climateSuitabilityMaps,
+                          thresholdAttackTreesMinDetectable = sim$thresholdAttackTreesMinDetectable,
+                          colNameForPrediction = Par$colNameForPrediction,
+                          growDataset = Par$dataset,
+                          growthData = mod$growthData,
+                          HaPerPixel = mod$HaPerPixel,
+                          .runName = Par$.runName, maxDistance = Par$maxDistance,
+                          dispersalKernel = Par$dispersalKernel,
+                          thresholdPineProportion = Par$thresholdPineProportion,
+                          dig = digs, outputPath = outputPath(sim),
+                          currentModule = currentModule(sim), objFunInner = objFunInner) |>
+               Cache(omitArgs = c("quotedSpread", "propPineRas", "massAttacksDT", "massAttacksStack",
+                                  "windDirStack", "windSpeedStack", "climateSuitabilityMaps",
+                                  "rasTemplate", "simEnvir"),
+                     .cacheExtra = digs)
+             # }
+           })
+  browser()
+
+
+
+  years <- Map(nam = mod$yearsAndLayerNames$nams, function(nam) {
+    grep(nam, optimOutFileList, value = TRUE)
+  })
+  DEout <- Map(files = optimOutFileList, function(files) {
+    readRDS(files)
+  })
+
+  DEout <- unlist(DEout, recursive = FALSE)
+  sim$fit_mpbSpreadOptimizer <- tail(DEout[[1]], 1)$member$bestmemit
+
   startToEnd <- paste0(start(sim), " to ", end(sim), "_", Sys.time())
 
   if (is.null(sim$DEout)) {
@@ -651,7 +758,7 @@ Validate <- function(sim) {
                               # The following are small and passed at the time of the DEoptim call
                               c("p", "quotedSpread", "distanceFunction"))
       sim$omitPastPines <- FALSE
-      sim$p_sdDist <- p["p_sdDist"]
+      # sim$p_sdDist <- p["p_sdDist"]
       sim$dispersalKernel <- P(sim)$dispersalKernel
       sim$maxDistance <- Par$maxDistance
       ss <- do.call(numDeriv::hessian, append(list(func = objFun),
@@ -690,8 +797,8 @@ Validate <- function(sim) {
       #################### PREDICT MAPS
       #########################################################
 
-      opts2 <- options(reproducible.cacheSpeed = "fast")
-      on.exit(options(opts2), add = TRUE)
+      # opts2 <- options(reproducible.cacheSpeed = "fast")
+      # on.exit(options(opts2), add = TRUE)
 
       quotedSpread <- getQuotedSpread(kernel = Par$dispersalKernel)
 
@@ -962,7 +1069,7 @@ plotFn <- function(sim) {
 }
 
 ### spread
-dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, massAttacksStack,
+dispersalFitIndiv <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, massAttacksStack,
                          rasterToMatch, maxDistance, # massAttacksRas,
                          params, #currentTime, bgSettlingProp,
                          type, reqdPkgs,
@@ -984,9 +1091,9 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   kern <- substr(tolower(dispersalKernel), start = 1, stop = 6)
   ll <- list()
   upper_meanDist <- maxDistance
-  upper_advectionMag <- 50000
-  lower_advectionMag <- 100
-  upper_sdDist <- 100
+  upper_advectionMag <- 2 # 2011, 2012, 2016 are all high
+  lower_advectionMag <- 0.0001
+  upper_sdDist <- 30
   pars <- switch(kern,
                  weibul = {
                    ll$p <- do.call(c, params[c("p_meanDist", "p_advectionMag", "p_sdDist")])
@@ -1018,7 +1125,7 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   lower <- pars$lower
   upper <- pars$upper
 
-  p_sdDist <- p["p_sdDist"] # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
+  # p_sdDist <- p["p_sdDist"] # sqrt(variance(of the Weibull distribution)) --> contributes to shape and scale parameters
   p_advectionMag <- p["p_advectionMag"]
   p[] <- sapply(seq_along(p), function(x) runif(1, lower[x], upper[x]))
   names(lower) <- names(p)
@@ -1038,24 +1145,6 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
   objsToExport <- c(objsToExport, "reqdPkgs", "objsToExport", "libPaths")
 
   if (any(type %in% c("DEoptim", "fit", "predict"))) {
-
-    # remove years that have not enough data
-    allYears <- names(massAttacksStack)
-    years <- data.frame(
-      startYears = allYears[-length(allYears)],
-      endYears = allYears[-1])
-
-    sampleSizes <- massAttacksDT[, .N, by = "layerName"]
-    keepLayers <- sampleSizes$layerName[sampleSizes$N > 1]
-    years <- years[years$startYears %in% keepLayers & years$endYears %in% keepLayers,]
-    keepLayers <- unique(unlist(years))
-    if (length(keepLayers)) {
-      if (length(setdiff(allYears, keepLayers))) {
-        massAttacksDT <- massAttacksDT[layerName %in% keepLayers]
-        massAttacksStack <- massAttacksStack[[keepLayers]]
-        windDirStack <- windDirStack[[keepLayers]]
-        windSpeedStack <- windSpeedStack[[keepLayers]]
-      }
 
       # ips <- c(rep("localhost", 6), # rep("n54", 8), rep("n14", 8), rep("n105", 8),
       #          rep("n181", 22),
@@ -1110,97 +1199,31 @@ dispersalFit <- function(quotedSpread, propPineRas, studyArea, massAttacksDT, ma
       list2env(mget(objsToExport), envir = .GlobalEnv)
       on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
 
-      DEout <- clusters:::DEoptimIterative2(fn = objFun,
-                                            lower = lower,
-                                            upper = upper,
-                                            # itersToDo = seq(objsForDEoptim$control$itermax),
-                                            control = control,
-                                            quotedSpread = quotedSpread,
-                                            objFunInner = objFunInner,
-                                            # iterStep,
-                                            # itermax = objsForDEoptim$control$itermax,
-                                            # .c, #objsForDEoptim$control$c,
-                                            # FS_formula, covMinMax, tests, maxFireSpread, mutuallyExclusive,
-                                            # doObjFunAssertions, Nreps, objFunCoresInternal, thresh, rep,
-                                            .verbose = 1, .plots = Par$.plots,
-                                            runName = .runName,
-                                            figurePath = figurePath, cachePath = paths$cachePath)
-    } else {
-      warning("Not enough data in ", paste0(allYears, collapse = ", "))
-      DEout <- list()
-    }
+      if (FALSE) {
+        (stMem <- system.time(
+          DEout <- objFun(p = c(100000, 0.1, 2), quotedSpread = quotedSpread, objFunInner = objFunInner)
+        ))
+        print(stMem)
+      } else {
+        DEout <- clusters:::DEoptimIterative2(fn = objFun,
+                                              lower = lower,
+                                              upper = upper,
+                                              # itersToDo = seq(objsForDEoptim$control$itermax),
+                                              control = control,
+                                              quotedSpread = quotedSpread,
+                                              objFunInner = objFunInner,
+                                              # iterStep,
+                                              # itermax = objsForDEoptim$control$itermax,
+                                              # .c, #objsForDEoptim$control$c,
+                                              # FS_formula, covMinMax, tests, maxFireSpread, mutuallyExclusive,
+                                              # doObjFunAssertions, Nreps, objFunCoresInternal, thresh, rep,
+                                              .verbose = 1, .plots = Par$.plots,
+                                              runName = .runName,
+                                              figurePath = figurePath, cachePath = paths$cachePath)
+      }
   }
   return(DEout)
 }
-#   for (iter in seq(objsForDEoptim$control$itermax)) {
-#     objsForDEoptim$control$itermax <- 1
-#     DE[[iter]] <- Cache(
-#       DEoptim(fn = objsForDEoptim$fn,
-#               lower = objsForDEoptim$lower,#c(500, 1, -90, 0.9, 1.1, 5),
-#               upper = objsForDEoptim$upper,#c(30000, 10, 240, 1.8, 1.6, 30),
-#               # reps = 1,
-#               quotedSpread = objsForDEoptim$quotedSpread,
-#               control = objsForDEoptim$control),
-#       # useCloud = TRUE,
-#       userTags = c("MPB fit_mpbSpreadOptimizer")#,
-#       # cacheId = cacheID,
-#       # cloudFolderID = "175NUHoqppuXc2gIHZh5kznFi6tsigcOX" # Eliot's Gdrive: Hosted/BioSIM/ folder
-#     )
-#     objsForDEoptim$control$initialpop <- DE[[iter]]$member$pop
-#   }
-#   fit_mpbSpreadOptimizer <- DE
-#
-#   fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, names(p))
-#   saveRDS(fit_mpbSpreadOptimizer, file = file.path(outputPath, paste0("DEout_", stFileName, ".rds")))
-#   sim2 <- get("sim", whereInStack("sim"))
-#   parms <- params(sim2)
-#   saveRDS(parms, file = file.path(outputPath, paste0("parms_", stFileName, ".rds")))
-#   try(parallel::stopCluster(cl), silent = TRUE)
-#
-# } else if (any(type == "runOnce")) {
-#   list2env(mget(objsToExport), envir = .GlobalEnv)
-#   on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
-#
-#   DEoutFileList <- dir(paths$outputPath, pattern = "DEout", full.names = TRUE)
-#   if (length(DEoutFileList)) {
-#     fit_mpbSpreadOptimizer <- readRDS(tail(DEoutFileList, 1)) # 24 was best so far
-#     if (length(colnames(fit_mpbSpreadOptimizer$member$pop)) == 0) {
-#       message("Please add names to parameter vector in fit_mpbSpreadOptimizer")
-#       fit_mpbSpreadOptimizer <- colnamesToDEout(fit_mpbSpreadOptimizer, c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler"))
-#     }
-#     pBest <- fit_mpbSpreadOptimizer$optim$bestmem[] # use [] to keep names
-#     pBest["p_sdDist"] <- 0.08
-#   } else {
-#     pBest <- p
-#   }
-#   message("This runOnce is intended to be used interactively")
-#   out <- objFun(quotedSpread = quotedSpread, # reps = 1,
-#                 p = pBest, objFunInner = objFunInner)#,
-#   #massAttacksStack = massAttacksStack, massAttacksDT = massAttacksDT)
-#   fit_mpbSpreadOptimizer <- NULL
-# } else if (any(type == "optim")) {
-#   # stop("This has not been maintained and appears to be not capable of estimating parameters")
-#   numCoresNeeded <- 5
-#   cl <- clusterSetup(rep("localhost", numCoresNeeded), objsToExport = objsToExport,
-#                      reqdPkgs = reqdPkgs, libPaths = libPaths, doSpeedTest = FALSE
-#   )
-#   on.exit(try(parallel::stopCluster(cl)), add = TRUE)
-#   fit_mpbSpreadOptimizer <- optimParallel::optimParallel(fn = objFun, par = p,
-#                                                          lower = lower,
-#                                                          upper = upper,
-#                                                          method = "L-BFGS-B",
-#                                                          quotedSpread = quotedSpread,
-#                                                          control = list(trace = 3, factr = 1e6),
-#                                                          parallel = list(cl = cl, forward = TRUE, loginfo  = TRUE)
-#   )
-#   saveRDS(fit_mpbSpreadOptimizer, file = file.path(outputPath, paste0("optimOut_", stFileName, ".rds")))
-# }
-# try(parallel::stopCluster(cl), silent = TRUE)
-# stPost <- Sys.time()
-# print(difftime(stPost, stPre))
-#
-# return(invisible(fit_mpbSpreadOptimizer))
-# }
 
 
 
@@ -1212,33 +1235,41 @@ spiralDistances <- function(pixelGroupMap, maxDis, cellSize) {
                          abs(spiral[, 1]), abs(spiral[, 2])),, drop = FALSE]
 }
 
-distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYrVec,
+distanceFunction <- function(dist, # angle,
+                             landscape, fromCell, toCells, fromXY, toXYs, # nextYrVec,
                              propPineRas, p_advectionMag, windDir, p_meanDist, p_sdDist,
-                             dispersalKernel, maxDistance, windSpeed, p_nu = NULL) {
+                             dispersalKernel, # maxDistance,
+                             windSpeed, p_nu = NULL) {
 
   if (p_advectionMag > 0) {
     # fromAndToXY <- xyFromCell(propPineRas, c(fromCell, toCells))
     # len <- length(fromCell)
     # fromXY <- fromAndToXY[seq(len), ]
     # toXYs <- fromAndToXY[-seq(len), ]
-    fromXY <- xyFromCell(propPineRas, fromCell)
-    toXYs <-  xyFromCell(propPineRas, toCells)
+    if (missing(fromXY))
+      fromXY <- xyFromCell(propPineRas, fromCell)
+    if (missing(toXYs))
+      toXYs <-  xyFromCell(propPineRas, toCells)
     if (length(windDir) > 1) {
       windDir <- windDir[fromCell]
       windSpeed <- windSpeed[fromCell]
     }
-    advectionXY <- c(x = sin(rad(windDir))*p_advectionMag*windSpeed,
-                     y = cos(rad(windDir))*p_advectionMag*windSpeed)
+    pAdvecMagTimesWindSpeed <- p_advectionMag*windSpeed
+    radWindDir <- rad(windDir)
+    advectionXY <- c(x = sin(radWindDir)*pAdvecMagTimesWindSpeed,
+                     y = cos(radWindDir)*pAdvecMagTimesWindSpeed)
     # The advection is pushing the things in a direction. We need to adjust the distance
     #   so that it is bigger or smaller, based on the
-    x <- toXYs[, 'x'] - advectionXY[1]/p_meanDist*dist
-    y <- toXYs[, 'y'] - advectionXY[2]/p_meanDist*dist
+    # distStd <- dist# /p_meanDist
+    x <- toXYs[, 'x'] - advectionXY[1]*dist
+    y <- toXYs[, 'y'] - advectionXY[2]*dist
     newTo <- cbind(x, y)
     colnames(newTo) <- c("x", "y")
-    if (!is.null(dim(dist))) dist <- dist[,1, drop = TRUE]
+    if (!is.null(dim(dist))) dist <- dist[, 1, drop = TRUE]
     # dists <- cbind(origX = toXYs[, "x"], origY = toXYs[, "y"],
     #                origDist = dist,
     #                .pointDistance(from = fromXY, newTo, angles = FALSE))
+
     dist <- sqrt((fromXY[, "x"] - newTo[, "x"])^2 +
                    (fromXY[, "y"] - newTo[, "y"])^2)
     # dist <- .pointDistance(from = fromXY, newTo, angles = FALSE)[, "dists"]
@@ -1247,7 +1278,9 @@ distanceFunction <- function(dist, angle, landscape, fromCell, toCells, # nextYr
 
   prob <- kernelFn(p_meanDist, p_sdDist, dispersalKernel, dist, p_nu = p_nu)
 
-  ll <- landscape[fromCell]
+  ll <- landscape[fromCell] # THIS BRINGS THE NUMBER OF SOURCE RED TREES INTO THE DISTANCE CALCULATION
+
+  # PROPAGULE SHADOW -- PROBABILITY * SOURCE ABUNDANCE
   prob1 <- prob * ll
   return(prob1)
 }
@@ -1268,12 +1301,12 @@ aggregateRasByDT <- function(ras, newRas, fn = sum) {
 }
 
 
-grow <- function(massAttacksDT, dataset, massAttacksStack, growthData, year = NULL) {
+grow <- function(massAttacksDT, dataset, HaPerPixel, growthData) {#, year = NULL) {
   ## determine the actual growth based on the actual number of attacked trees/ha
-  layerNames <- unique(massAttacksDT$layerName)
-  if (!is.null(year)) layerNames <- grep(year, layerNames, value = TRUE)
-  massAttacksDT[layerName %in% layerNames, greenTreesYr_t := xt(ATKTREES, CLIMATE, dataset,
-                                                                massAttacksStack, growthData)]
+  # layerNames <- unique(massAttacksDT$layerName)
+  # if (!is.null(year)) layerNames <- grep(year, layerNames, value = TRUE)
+  massAttacksDT[, greenTreesYr_t := xt(ATKTREES, CLIMATE, dataset,
+                                                                HaPerPixel, growthData)]
 
   return(massAttacksDT)
 }
@@ -1492,25 +1525,28 @@ stacksPredVObs <- function(massAttacksStack, predictedStack, propPineMap, thresh
 
 
 
-growPredict <- function(sim) {
-  if (time(sim) == start(sim)) {
-    massAttacksDTforPredict <- data.table::copy(sim$massAttacksDT)
-    massAttacksDTforPredict <- massAttacksDTforPredict[grep(time(sim), layerName), ]
-  } else {
-    massAttacksDTforPredict <- data.table::copy(sim$predictedDT)
-  }
-  if ("predYear" %in% colnames(massAttacksDTforPredict)) {
-    massAttacksDTforPredict[, layerName := predYear]
-  }
+#' @param massAttacksDT A data.table with `colNameForPrediction` column.
+growPredict <- function(massAttacksDT, thresholdAttackTreesMinDetectable, colNameForPrediction,
+                        growDataset, growthData, HaPerPixel) {
+  #if (missing(growYear))
+  #  growYear <- currentTime
+  # if (NROW(predictedDT) == 0) {
+  massAttacksDTforPredict <- data.table::copy(massAttacksDT)
+  #    massAttacksDTforPredict <- massAttacksDTforPredict[grep(growYear, layerName), ]
+  #   } else {
+  #    massAttacksDTforPredict <- data.table::copy(predictedDT)
+  #   }
+  # if ("predYear" %in% colnames(massAttacksDTforPredict)) {
+  #   massAttacksDTforPredict[, layerName := predYear]
+  # }
 
-  if (!is.null(sim$thresholdAttackTreesMinDetectable))
-    massAttacksDTforPredict <- massAttacksDTforPredict[get(Par$colNameForPrediction) > sim$thresholdAttackTreesMinDetectable]
+  if (!is.null(thresholdAttackTreesMinDetectable))
+    massAttacksDTforPredict <- massAttacksDTforPredict[get(colNameForPrediction) > thresholdAttackTreesMinDetectable]
 
-  massAttacksDTforPredict <- massAttacksDTforPredict[grep(time(sim), layerName)] # remove all future data
+  # massAttacksDTforPredict <- massAttacksDTforPredict[grep(growYear, layerName)] # remove all future data
   if (NROW(massAttacksDTforPredict) == 0)
     stop("The number of attacked trees has fallen below sim$thresholdAttackTreesMinDetectable; the outbreak is over!")
-  grow(massAttacksDTforPredict, P(sim)$dataset,
-       sim$massAttacksStack, mod$growthData, year = time(sim))
+  grow(massAttacksDTforPredict, growDataset, HaPerPixel, growthData)
 }
 
 colnamesToDEout <- function(fit_mpbSpreadOptimizer, paramNames = c("p_meanDist", "p_advectionMag", "p_sdDist", "p_rescaler")) {
@@ -1588,4 +1624,194 @@ getQuotedSpread <- function(kernel = "weibul") {
     quotedSpread <- quotedSpreadWeibull3
 
   quotedSpread
+}
+
+
+yearsAndLayerNames <- function(massAttacksDT) {
+  sampleSizes <- massAttacksDT[, .(NumCells = .N, NumTrees = round(sum(ATKTREES))), by = "layerName"]
+  messageDF(sampleSizes)
+  tooSmall <- sampleSizes$NumCells <= 1
+  if (any(tooSmall))
+    sampleSizes <- sampleSizes[tooSmall %in% FALSE]
+  nams <- sampleSizes[["layerName"]]
+  years <- gsub("[[:alpha:]]*", "", nams) |> as.integer()
+  keepYears <- c(diff(years) == 1, TRUE)
+  years <- years[keepYears]
+  nams <- nams[keepYears]
+  data.table(years = years, nams = nams)
+}
+
+DEobjsDir <- "DEobjs"
+
+
+yearsCreateDT <- function(modelsToRun, yearsAndNams, yearsAndNamesForClimate) {
+  if (missing(modelsToRun)) {
+    modelsToRun <- sim$validationExperiment[ModelToFit == 1]
+  }
+  allYears <- modelsToRun[, .(t0Num = StartTrainingYear, t1Num = EndTrainingYear)]
+  allYears[ , t0 := yearsAndNams$nams[match(allYears$t0Num, yearsAndNams$years)], ]
+  allYears[ , tEnd := yearsAndNams$nams[match(allYears$t1Num, yearsAndNams$years)], ]
+  allYears[ , tEnd := yearsAndNams$nams[match(allYears$t1Num, yearsAndNams$years)], ]
+  allYears[ , tminus1 := yearsAndNamesForClimate$namsForClimate[
+    match(allYears$t0Num - 1, yearsAndNamesForClimate$yearsForClimate)], ]
+  allYears <- na.omit(allYears)
+  stopifnot(all(allYears$t1Num == as.integer(gsub("X", "", allYears$tEnd))))
+  stopifnot(all(allYears$t0Num == as.integer(gsub("X", "", allYears$t0))))
+  set(allYears, NULL, c("t1Num", "t0Num"), NULL)
+}
+
+yearsAndNamesForClimate <- function(climateStack) {
+  namsForClimate <- names(climateStack)
+  yearsForClimate <- gsub("[[:alpha:]]*", "", namsForClimate) |> as.integer()
+  data.table(years = yearsForClimate, nams = namsForClimate)
+}
+
+
+
+
+predictInner <- function(file, objsToExport, simLs, simEnvir,
+                         EndTrainingYear, PredictedYear,
+                         StartTrainingYear, layerName, endLabel, startLabel,
+                         massAttacksDT, propPineRas,
+                         massAttacksStack, quotedSpread, # windStacksDig,
+                         windDirStack, windSpeedStack, climateSuitabilityMaps,
+                         thresholdAttackTreesMinDetectable,
+                         colNameForPrediction, growDataset,
+                         growthData, HaPerPixel, .runName, maxDistance,
+                         dispersalKernel, thresholdPineProportion, dig,
+                         outputPath, currentModule, objFunInner) {
+  DEout <- readRDS(file)
+  messageColoured("Predicting with ", file, colour = "col_br_blue")
+
+  DEout <- unlist(DEout, recursive = FALSE)
+  p <- tail(DEout[[1]], 1)$member$bestmemit
+
+  omitPastPines <- FALSE
+  objsToExportFromSim <- intersect(objsToExport, simLs)
+  objsToExportFromHere <- intersect(objsToExport, ls())
+  ll <- modifyList(mget(objsToExportFromHere), mget(objsToExportFromSim, envir = simEnvir))
+  list2env(ll, envir = .GlobalEnv)
+  on.exit(rm(list = objsToExport, envir = .GlobalEnv), add = TRUE)
+
+  predictYears <- seq(EndTrainingYear, PredictedYear)[-1]
+  fitYears <- seq(StartTrainingYear, EndTrainingYear)
+  fitYearsTrunc <- fitYears[-1]
+  # fitYearsNam <- paste0("X", fitYears)
+
+  allNams <- unique(massAttacksDT$layerName)
+  maDT <- massAttacksDT[layerName %in% endLabel]
+
+  growYearLabel <- endLabel
+
+  fitLabel <- paste(startLabel, "to", endLabel)
+  dt <- list()
+  for (py in seq_along(predictYears)) {
+
+    tminus1 <- predictYears[py] - 2
+    t0 <- predictYears[py] - 1
+    tEnd <- predictYears[py]
+    tminus1Nam <- grep(tminus1, allNams, value = TRUE)
+    t0Nam <- grep(t0, allNams, value = TRUE)
+    t1Nam <- grep(predictYears[py], allNams, value = TRUE)
+    # messageColoured("Starting with fit using:", startLabel, " to ", endLabel,
+    #                 ", predict: ", tail(predictYears, 1), ", on: ", t1Nam, colour = "green")
+
+    massAttacksDT_t0_1Yr <- growPredict(maDT,
+                                            # sim$predictedDT,
+                                            # growYearLabel,
+                                            # currentTime = time(sim),
+                                            thresholdAttackTreesMinDetectable = thresholdAttackTreesMinDetectable,
+                                            colNameForPrediction = colNameForPrediction,
+                                            growDataset = growDataset,
+                                            growthData = growthData,
+                                            HaPerPixel = HaPerPixel)
+
+    hasBeetleMap <- terra::rast(massAttacksStack[[t0Nam]])# > 1
+    hasBeetleMap[maDT$pixel] <- maDT$ATKTREES
+    bufferedMap <- buffer(hasBeetleMap, 2e5)
+    bufferedMapWh <- which(values(bufferedMap, mat = FALSE))
+    propPineRas <- if (length(propPineRas) == 1) propPineRas else propPineRas[[tminus1Nam]]
+    whPixelsHavePine <- which(values(propPineRas, mat = FALSE) > thresholdPineProportion)
+    toCells <- intersect(whPixelsHavePine, bufferedMapWh)
+
+    if (FALSE) { # map it
+      couldHaveBeetleNextYear <- terra::rast(hasBeetleMap)
+      couldHaveBeetleNextYear[toCells] <- 1L
+    }
+    rasTemplate <- terra::rast(massAttacksStack[[1]])
+    rasTemplate <- setValues(rasTemplate, values = NA)
+    digs <- list(dig, tminus1Nam)
+    out <- objFunInner(
+      quotedSpread,
+      toCells = toCells,
+      t0, tEnd, tminus1,
+      rasterTemplate = rasTemplate,
+      massAttacksDT = massAttacksDT_t0_1Yr,
+      windDirStack = windDirStack[[tminus1Nam]],
+      windSpeedStack = windSpeedStack[[tminus1Nam]],
+      propPineRas = propPineRas,
+      p = p, dispersalKernel = dispersalKernel,
+      maxDistance = maxDistance,
+      # objFunValOnFail = 1e3,
+      omitPastPines = omitPastPines,
+      mode = "predict"
+    ) |> Cache(useCache = identical(py, 1L), omitArgs = c("quotedSpread", "propPineRas", "windDirStack", "windSpeedStack", "rasTemplate"),
+               .cacheExtra = digs, verbose = 0)
+    draw <- rnbinom(n = length(out), mu = out, size = 0.2)
+    pred <- data.table(probAttack = out, pixels = toCells, attacked = draw)
+    predNoZeros <- pred[pred$attacked > 0]
+
+    dt[[t1Nam]] <- pred
+
+    if (isTRUE(attr(out, ".Cache")$newCache) || is.null(attr(out, ".Cache"))) {
+      predOutFilename <- file.path(basename(outputPath), currentModule, 'preds',
+                                   paste0(paste("pred", .runName, startLabel,
+                                                endLabel, tail(predictYears, 1), t1Nam,
+                                                round(Sys.time(), 0), sep = "_"), ".rds"))
+      messageColoured("Saving pred outputs to: ", predOutFilename, colour = "yellow")
+      dir.create(dirname(predOutFilename), recursive = TRUE, showWarnings = FALSE)
+      saveRDS(pred, file = predOutFilename)
+    }
+
+
+    maDTNew <- data.table(
+      pixel = predNoZeros$pixels,
+      CLIMATE = values(climateSuitabilityMaps[[t1Nam]], mat = FALSE)[predNoZeros$pixels],
+      ATKTREES = predNoZeros$attacked,
+      layerName = t1Nam
+    )
+    xys <- terra::xyFromCell(climateSuitabilityMaps[[t1Nam]], cell = predNoZeros$pixels)
+    maDT <- data.table(maDTNew, xys)
+
+    if (FALSE) { # map it
+      probBeetleNextYear <- terra::rast(hasBeetleMap)
+      probBeetleNextYear[pred$pixels] <- pred$probAttack
+      names(probBeetleNextYear) <- paste0("prob beetle ", t1Nam)
+      dtNoZero <- pred[pred$attacked > 0]
+      drawBeetleNextYear <- terra::rast(hasBeetleMap)
+      drawBeetleNextYear[dtNoZero$pixels] <- dtNoZero$attacked
+      names(drawBeetleNextYear) <- paste0("predicted beetle ", t1Nam)
+      beetleNextYear <- c(probBeetleNextYear, drawBeetleNextYear, massAttacksStack[[t1Nam]])
+      terra::plot(beetleNextYear)
+    }
+    messageColoured("Done predict:", startLabel, " to ", endLabel,
+                    ", predict: ", tail(predictYears, 1), ", on: ", t1Nam, colour = "col_br_magenta")
+  }
+  dt
+}
+
+
+
+setupParFun <- function(coresList) {
+  if (any(!is.na(coresList)) && length(coresList) > 0 && any(lengths(coresList))) {
+    parFun <- mcmapply
+    opts <- options("mc.cores" = length(coresList))
+    reproducible:::on.exit2(options(opts), envir = parent.frame())
+    # parArgs <- list(# mc.cores = length(coresList),
+    #   mc.preschedule = FALSE)
+  } else  {
+    parFun <- mapply
+    # parArgs <- list()
+  }
+  parFun
 }
